@@ -24,6 +24,12 @@ char *dev_name = "YOUR BOILER SERIAL NUMBER";  // Your registered device serial 
 char *dev_password = "YOUR REGISTER PASSWORD"; // Your registered device password
 ```
 
+另外需要确认采暖控制形式
+```
+#define CH_MODE 1 // 0-manual, 1-auto-temp control
+```
+其中0为手动采暖水温控制，1为自动室温控制。如果采用自动室温控制，应当确认雅图伴侣装到室内适合测温的位置。或者已经采用无线温度传感器与雅图伴侣配对。
+
 ## 雅图伴侣本地UDP通讯格式
 
 ### UDP传输方式
@@ -77,4 +83,4 @@ char *dev_password = "YOUR REGISTER PASSWORD"; // Your registered device passwor
 
 ### 本例子的局限性
 
-本例子只实现了生活热水的控制与交互，也没有完善如发送重试，休眠等功能，因为这仅仅是一个例子而已。如果您有更多的想法和创意，请自行实现。如果您对雅图伴侣功能增加有什么想法，请与我联系。
+本例子只实现了简单功能交互。如果您有更多的想法和创意，请自行实现。如果您对雅图伴侣功能增加有什么想法，请与我联系。

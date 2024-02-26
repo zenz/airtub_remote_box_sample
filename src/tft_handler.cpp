@@ -6,6 +6,7 @@ float p = 3.1415926;
 
 Adafruit_ST7789 *_tft = NULL;
 QRCode qrcode;
+GFXcanvas16 canvas(240, 135);
 
 void tft_set_backlight(bool state)
 {
@@ -45,22 +46,30 @@ void tft_init(bool backlight)
 
 void tft_clear(uint16_t color)
 {
-    _tft->fillScreen(color);
+    canvas.fillScreen(color);
+}
+
+void tft_write_transperant(uint8_t x, uint8_t y, uint8_t size, const char *text, uint16_t color)
+{
+    canvas.setCursor(x, y);
+    canvas.setTextColor(color);
+    canvas.setTextSize(size);
+    canvas.print(text);
 }
 
 void tft_write(uint8_t x, uint8_t y, uint8_t size, const char *text, uint16_t color)
 {
-    _tft->setCursor(x, y);
-    _tft->setTextColor(color, ST77XX_BLACK);
-    _tft->setTextSize(size);
-    _tft->print(text);
+    canvas.setCursor(x, y);
+    canvas.setTextColor(color, ST77XX_BLACK);
+    canvas.setTextSize(size);
+    canvas.print(text);
 }
 
 void tft_gen_qrcode(const char *text)
 {
     uint8_t qrcodeData[qrcode_getBufferSize(3)];
     qrcode_initText(&qrcode, qrcodeData, 3, 0, text);
-    _tft->fillScreen(ST77XX_WHITE);
+    canvas.fillScreen(ST77XX_WHITE);
 
     uint8_t scale = 4;
     uint16_t offsetX = (_tft->width() - qrcode.size * scale) / 2;
@@ -73,7 +82,7 @@ void tft_gen_qrcode(const char *text)
             if (qrcode_getModule(&qrcode, x, y))
             {
                 // Add the offset to the x and y coordinates
-                _tft->fillRect(x * scale + offsetX, y * scale + offsetY, scale, scale, ST77XX_BLACK);
+                canvas.fillRect(x * scale + offsetX, y * scale + offsetY, scale, scale, ST77XX_BLACK);
             }
         }
     }
@@ -81,7 +90,7 @@ void tft_gen_qrcode(const char *text)
 
 void tft_draw_bitmap(uint8_t x, uint8_t y, const uint16_t bitmap[], uint8_t w, uint8_t h)
 {
-    _tft->drawRGBBitmap(x, y, bitmap, w, h);
+    canvas.drawRGBBitmap(x, y, bitmap, w, h);
 }
 
 void tft_draw_bitmap_reverse(int16_t x, int16_t y, const uint16_t bitmap[], int16_t w, int16_t h)
@@ -91,17 +100,22 @@ void tft_draw_bitmap_reverse(int16_t x, int16_t y, const uint16_t bitmap[], int1
         for (int16_t i = 0; i < w; i++)
         {
             uint16_t pixelColor = pgm_read_word(&bitmap[j * w + i]);
-            _tft->drawPixel(x + w - i - 1, y + j, pixelColor);
+            canvas.drawPixel(x + w - i - 1, y + j, pixelColor);
         }
     }
 }
 
 void tft_clear_rect(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint16_t color)
 {
-    _tft->fillRect(x, y, w, h, color);
+    canvas.fillRect(x, y, w, h, color);
 }
 
 void tft_draw_round_rect(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t r, uint16_t color)
 {
-    _tft->fillRoundRect(x, y, w, h, r, color);
+    canvas.fillRoundRect(x, y, w, h, r, color);
+}
+
+void tft_update()
+{
+    _tft->drawRGBBitmap(0, 0, canvas.getBuffer(), 240, 135);
 }
