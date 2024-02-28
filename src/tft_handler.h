@@ -2,6 +2,14 @@
 #include <Adafruit_ST7789.h> // Hardware-specific library for ST7789
 #include <SPI.h>
 
+#undef TFT_RST
+#undef TFT_RST
+#undef TFT_MOSI
+#undef TFT_SCK
+#undef TFT_DC
+#undef TFT_CS
+#undef TFT_BL
+
 #define TFT_RST -1 // we use the seesaw for resetting to save a pin
 #define TFT_MOSI 33
 #define TFT_SCK 34

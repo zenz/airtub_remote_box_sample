@@ -10,14 +10,7 @@ GFXcanvas16 canvas(240, 135);
 
 void tft_set_backlight(bool state)
 {
-    if (state)
-    {
-        digitalWrite(TFT_BL, HIGH);
-    }
-    else
-    {
-        digitalWrite(TFT_BL, LOW);
-    }
+    digitalWrite(TFT_BL, state);
 }
 
 void tft_init()
@@ -29,10 +22,10 @@ void tft_init()
     _tft->setSPISpeed(SPI_SPEED);
     uint16_t time = millis();
     _tft->fillScreen(ST77XX_BLACK);
-    time = millis() - time;
-    Serial.print("fillScreen spend:");
-    Serial.print(time, DEC);
-    Serial.println("ms");
+    // time = millis() - time;
+    // Serial.print("fillScreen spend:");
+    // Serial.print(time, DEC);
+    // Serial.println("ms");
 
     _tft->setRotation(3);
 }
@@ -117,5 +110,5 @@ void tft_draw_round_rect(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t r, 
 
 void tft_update()
 {
-    _tft->drawRGBBitmap(0, 0, canvas.getBuffer(), 240, 135);
+    _tft->drawRGBBitmap(0, 0, canvas.getBuffer(), _tft->width(), _tft->height());
 }

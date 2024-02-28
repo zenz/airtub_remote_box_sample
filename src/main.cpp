@@ -4,12 +4,29 @@
 #include <ErriezCRC32.h>
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
+#include <WiFiManager.h>
+#include <EEPROM.h>
 #include "tft_handler.h"
 #include "ec11_handler.h"
 #include "udp_handler.h"
 
 #include "../images/fire.h"
 #include "../images/fire_rev.h"
+
+#define LOWER_CASE(x) (                                     \
+    {                                                       \
+      char *ch = x;                                         \
+      while (*ch)                                           \
+      {                                                     \
+        if (((*ch | 0x20) >= 'a') && ((*ch | 0x20) <= 'z')) \
+          *ch |= 0x20;                                      \
+        ch++;                                               \
+      }                                                     \
+    })
+
+WiFiManager wm;
+bool shouldSaveConfig = false;
+bool configured = false;
 
 #define UDP_PORT 4211
 
@@ -25,38 +42,43 @@ int target_mode = 0;
 bool modified = false;
 unsigned long modified_ts = millis();
 
-char *wifi_ssid = "YOUR WIFI SSID";            // Your WiFi SSID
-char *wifi_password = "YOUR WIFI PASSWORD";    // Your WiFi password
-char *dev_name = "YOUR BOILER SERIAL NUMBER";  // Your registered device serial number
-char *dev_password = "YOUR REGISTER PASSWORD"; // Your registered device password
+struct devices
+{
+  char dev_name[18];     // Your registered device serial number
+  char dev_password[18]; // Your registered device password
+  uint8_t dev_mode;      // 0-manual, 1-auto-temp control
+  uint8_t dev_active;    // 0-dhw, 1-heating
+} devs;
 
-#define CH_MODE 1 // 0-manual, 1-auto-temp control
+uint8_t CH_MODE = 1;
 
-const char *ap_flame_state = "fst";
+const char ap_flame_state[] = "fst";
+const char ap_fault_state[] = "flt";
+bool was_fault = false;
 
 // for DHW
-const char *dhw_current_mode = "cdm";
-const char *dhw_target_mode = "tdm";
-const char *dhw_current_temp = "cdt";
-const char *dhw_target_temp = "tdt";
+const char dhw_current_mode[] = "cdm";
+const char dhw_target_mode[] = "tdm";
+const char dhw_current_temp[] = "cdt";
+const char dhw_target_temp[] = "tdt";
 const int dhw_min_temp = 35;
 const int dhw_max_temp = 60;
 // for DHW
 
 // for CH
-const char *ch_current_mode = "ccm";
-const char *ch_target_mode = "tcm";
-const char *ch_current_temp = "cct";
-const char *ch_target_temp = "tct";
+const char ch_current_mode[] = "ccm";
+const char ch_target_mode[] = "tcm";
+const char ch_current_temp[] = "cct";
+const char ch_target_temp[] = "tct";
 const int ch_min_temp = 35;
 const int ch_max_temp = 80;
 // for CH
 
 // for AUTO-ROOM HEATING
-const char *atm_current_mode = "ccm";
-const char *atm_target_mode = "atm";
-const char *atm_current_temp = "crt";
-const char *atm_target_temp = "trt";
+const char atm_current_mode[] = "ccm";
+const char atm_target_mode[] = "atm";
+const char atm_current_temp[] = "crt";
+const char atm_target_temp[] = "trt";
 const int atm_min_temp = 4;
 const int atm_max_temp = 26;
 // for AUTO-ROOM HEATING
@@ -91,37 +113,52 @@ void change_control_target()
     MAX_TEMP = dhw_max_temp;
     break;
 
-#if CH_MODE == 1
-
   case 1:
-    ap_current_mode = (char *)atm_current_mode;
-    ap_target_mode = (char *)atm_target_mode;
-    ap_current_temp = (char *)atm_current_temp;
-    ap_target_temp = (char *)atm_target_temp;
-    MIN_TEMP = atm_min_temp;
-    MAX_TEMP = atm_max_temp;
-    break;
-#else
+    if (CH_MODE)
+    {
+      ap_current_mode = (char *)atm_current_mode;
+      ap_target_mode = (char *)atm_target_mode;
+      ap_current_temp = (char *)atm_current_temp;
+      ap_target_temp = (char *)atm_target_temp;
+      MIN_TEMP = atm_min_temp;
+      MAX_TEMP = atm_max_temp;
+    }
+    else
+    {
+      ap_current_mode = (char *)ch_current_mode;
+      ap_target_mode = (char *)ch_target_mode;
+      ap_current_temp = (char *)ch_current_temp;
+      ap_target_temp = (char *)ch_target_temp;
+      MIN_TEMP = ch_min_temp;
+      MAX_TEMP = ch_max_temp;
+    }
 
-  case 1:
-    ap_current_mode = (char *)ch_current_mode;
-    ap_target_mode = (char *)ch_target_mode;
-    ap_current_temp = (char *)ch_current_temp;
-    ap_target_temp = (char *)ch_target_temp;
-    MIN_TEMP = ch_min_temp;
-    MAX_TEMP = ch_max_temp;
     break;
-
-#endif
 
   default:
     break;
   }
+
+  // save running state
+  devs.dev_active = target_index;
+  EEPROM.begin(512);
+  EEPROM.put(0, devs);
+  if (EEPROM.commit())
+  {
+    Serial.println("Settings saved");
+  }
+  else
+  {
+    Serial.println("EEPROM error");
+  }
+  EEPROM.end();
+
   target_index++;
   if (target_index > 1)
   {
     target_index = 0;
   }
+
   target_temp = 0;
   target_mode = 0;
 }
@@ -150,7 +187,7 @@ bool get_airtub_device_ip()
     {
       for (int i = 0; i < n; ++i)
       {
-        if (MDNS.hostname(i) == String(dev_name))
+        if (MDNS.hostname(i) == String(devs.dev_name))
         {
           Serial.printf("Find device %s with IP %s\n", MDNS.hostname(i).c_str(), MDNS.IP(i).toString().c_str());
           addr = MDNS.IP(i);
@@ -175,7 +212,7 @@ void send_udp_msg(udp_msg_format_t msg)
 
   /* Do some Airtub Partner communicate treatments first.*/
   Serial.printf("Message Processing: %s\n", msg.data);
-  xor_crypt((uint8_t *)msg.data, msg.len, (uint8_t *)dev_password, strlen(dev_password)); // 加密
+  xor_crypt((uint8_t *)msg.data, msg.len, (uint8_t *)devs.dev_password, strlen(devs.dev_password)); // 加密
   msg.crc = crc32Buffer(msg.data, msg.len);
 
   if (addr != IPAddress(0, 0, 0, 0))
@@ -201,7 +238,7 @@ void change_value()
   char buffer[180];
   udp_msg_format_t msg_send;
   JsonDocument json;
-  json["tar"] = dev_name;
+  json["tar"] = devs.dev_name;
   json["dev"] = my_name;
   json[ap_target_temp] = target_temp;
   msg_send.type = 3; // AIRCUBE
@@ -216,13 +253,9 @@ void change_mode(int mode)
   char buffer[180];
   udp_msg_format_t msg_send;
   JsonDocument json;
-  json["tar"] = dev_name;
+  json["tar"] = devs.dev_name;
   json["dev"] = my_name;
-
-#if CH_MODE == 0
-  json[auto_target_mode] = 0;
-#endif
-
+  json["atm"] = CH_MODE;
   json[ap_target_mode] = mode;
   msg_send.type = 3; // AIRCUBE
   msg_send.len = serializeJson(json, buffer, 180);
@@ -243,6 +276,16 @@ bool removeSubstring(char *str, const char *toRemove)
   return false;
 }
 
+void reset_esp()
+{
+  WiFi.eraseAP();
+  EEPROM.begin(512);
+  EEPROM.put(0, nullptr);
+  EEPROM.commit();
+  EEPROM.end();
+  ESP.restart();
+}
+
 int handleEC11Event()
 {
   static int pos = 0;
@@ -256,7 +299,7 @@ int handleEC11Event()
   if (pos != newPos)
   {
     rotationCount++;
-    if (rotationCount >= 20)
+    if (rotationCount >= 10)
     {
       rotationCount = 0;
       pos = newPos;
@@ -266,14 +309,14 @@ int handleEC11Event()
 
   switch (buttonState)
   {
-  // 得到负数，为长按，点击为整数
+  // a negative number to indicate a long pressed time
   case -5:
   case -6:
   case -7:
   case -8:
   case -9:
     Serial.println("Long pressed, restart!");
-    ESP.restart();
+    reset_esp();
     break;
   case 1:
     if (!show_qrcode)
@@ -347,10 +390,10 @@ void udp_callback(AsyncUDPPacket &packet)
     Serial.println("Invalid packet");
     return;
   }
-  xor_crypt(reinterpret_cast<uint8_t *>(msg.data), msg.len, reinterpret_cast<const uint8_t *>(dev_password), strlen(dev_password)); // decode message
+  xor_crypt(reinterpret_cast<uint8_t *>(msg.data), msg.len, reinterpret_cast<const uint8_t *>(devs.dev_password), strlen(devs.dev_password)); // decode message
   msg.data[msg.len] = '\0';
   char targetString[30];
-  sprintf(targetString, "\"dev\":\"%s\",", dev_name);
+  sprintf(targetString, "\"dev\":\"%s\",", devs.dev_name);
   unsigned long time_stamp = millis();
   if (removeSubstring(msg.data, targetString))
   {
@@ -369,14 +412,42 @@ void udp_callback(AsyncUDPPacket &packet)
   // }
 }
 
+void saveParamCallback()
+{
+  shouldSaveConfig = true;
+}
+
 void setup(void)
 {
   Serial.begin(115200);
 
   pinMode(PIN_BTN, INPUT_PULLUP); // Must PULLUP first to make button click work correctly
   ec11_init();                    // Initialize button & rotary encoder
+  int critical = digitalRead(PIN_BTN);
+  if (critical == LOW)
+  {
+    Serial.println("Reset Remote Box!");
+    reset_esp();
+  }
 
-  char AutoConnectAP[32];
+  EEPROM.begin(512);
+  EEPROM.get(0, devs);
+  delay(10);
+  EEPROM.end();
+  // check if devs is valid
+  if (strlen(devs.dev_name) == 0 || strlen(devs.dev_password) == 0)
+  {
+    Serial.println("Device not configured!");
+    configured = false;
+  }
+  else
+  {
+    configured = true;
+    CH_MODE = devs.dev_mode;
+    target_index = devs.dev_active;
+    Serial.printf("Device: %s, Password: %s, Mode: %d， Active: %d\n", devs.dev_name, devs.dev_password, devs.dev_mode, devs.dev_active);
+  }
+
   uint64_t chipid = ESP.getEfuseMac(); // The chip ID is essentially its MAC address(length: 6 bytes).
   sprintf(my_name, "AIRCUBE-%08X", (uint32_t)chipid);
 
@@ -384,13 +455,66 @@ void setup(void)
   Serial.println("Initialized");
   tft_clear(0x0000);
   tft_write(20, 26, 2, "PREPAIRING...", 0xFFE0);
-  tft_update();
 
-  WiFi.begin(wifi_ssid, wifi_password);
-  WiFi.hostname(my_name);
+  if (!configured)
+  {
+    Serial.println("Not configured");
+    tft_write(20, 46, 2, "WAITING FOR", 0xFFE0);
+    tft_write(20, 66, 2, "CONFIGURATION", 0xFFE0);
+    wm.erase(true);
+  }
+  tft_update();
+  delay(10);
+
+  WiFiManagerParameter custom_device("dev", "device serial num:", "", 14, "autocapitalize='none' maxlength=12 required pattern='[a-zA-Z0-9]*' placeholder=\"boiler serial num\"");
+  WiFiManagerParameter custom_password("pass", "device password:", "", 14, "maxlength=12 required type=\"password\" placeholder=\"boiler password\"");
+  WiFiManagerParameter custom_mode("mode", "heating mode", "", 2, "required type=\"number\" min=\"0\" max=\"1\" placeholder=\"0-manual 1-auto\"");
+
+  wm.addParameter(&custom_device);
+  wm.addParameter(&custom_password);
+  wm.addParameter(&custom_mode);
+  wm.setSaveParamsCallback(saveParamCallback);
+
+  std::vector<const char *> menu = {"wifi"};
+  wm.setDebugOutput(true);
+  wm.setCountry("CN");
+  wm.setHostname(my_name);
+  wm.setDarkMode(true);
+  wm.setConfigPortalTimeout(180);
+  wm.setMenu(menu);
+  wm.setConnectTimeout(180);
+  bool result = wm.autoConnect(my_name, "4008206306");
+  if (!result)
+  {
+    Serial.println("Failed to setup WiFi");
+  }
+  else
+  {
+    if (shouldSaveConfig)
+    {
+      Serial.println("Should save parameters");
+      strcpy(devs.dev_name, custom_device.getValue());
+      LOWER_CASE(devs.dev_password); // always lowercase the serial number
+      strcpy(devs.dev_password, custom_password.getValue());
+      devs.dev_mode = atoi(custom_mode.getValue());
+      EEPROM.begin(512);
+      EEPROM.put(0, devs);
+      if (EEPROM.commit())
+      {
+        Serial.println("Settings saved");
+      }
+      else
+      {
+        Serial.println("EEPROM error");
+      }
+      EEPROM.end();
+      ESP.restart();
+    }
+  }
+
+  WiFi.mode(WIFI_STA);
   WiFi.enableLongRange(true);
   WiFi.setTxPower(WIFI_POWER_19dBm);
-  WiFi.setAutoConnect(true);
   WiFi.setSleep(false);
 
   if (mdns_init() != ESP_OK)
@@ -398,7 +522,7 @@ void setup(void)
     Serial.println("mDNS failed to start");
   }
 
-  sprintf(target_reply, "{\"rec\":1,\"dev\":\"%s\"}", dev_name);
+  sprintf(target_reply, "{\"rec\":1,\"dev\":\"%s\"}", devs.dev_name);
   if (udp.listenMulticast(UDP_BCAST_GRP, UDP_PORT))
   {
     Serial.println("UDP Listening");
@@ -428,6 +552,9 @@ void loop()
   char buffer[10]; // Make sure this is large enough for your value
 
   const int rotary = handleEC11Event(); // Handle button and rotary events
+
+  get_airtub_device_ip();
+
   if (rotary != 0)
   {
     modified = true;
@@ -454,31 +581,39 @@ void loop()
     return;
   }
 
-  if (json.containsKey("flt"))
+  // handling error code
+  if (json.containsKey(ap_fault_state))
   {
-    int value_flt = json["flt"].as<int>();
-    if (value_flt == 0)
+    int value_flt = json[ap_fault_state].as<int>();
+    if (value_flt > 0)
     {
-      char err_string[10];
-      value_flt = 4;
-      sprintf(err_string, "E%02D", value_flt);
+      was_fault = true;
+      sprintf(buffer, "E%02D", value_flt);
       tft_clear(0x0000);
-      tft_write(20, 26, 12, err_string, 0xF800);
+      tft_write(20, 26, 12, buffer, 0xF800);
       tft_update();
       return;
     }
   }
+  else if (was_fault)
+  {
+    was_fault = false;
+    tft_clear(0x0000);
+  }
 
+  // handling current temp
   int value_temp = 0;
   if (json.containsKey(ap_current_temp))
   {
     if (target_index == 0)
     {
+      // auto heating mode
       float value_temp_float = json[ap_current_temp].as<float>();
-      value_temp = round(value_temp_float + 0.1);
+      value_temp = round(value_temp_float - 0.1);
     }
     else
     {
+      // water or manual heating mode
       value_temp = json[ap_current_temp].as<int>();
     }
     sprintf(buffer, "%02d", value_temp);
@@ -486,12 +621,14 @@ void loop()
     tft_write(15, 26, 12, value, 0xFFE0);
   }
 
+  // handling target temp
   int value_target_temp = 0;
   if (json.containsKey(ap_target_temp))
   {
     value_target_temp = json[ap_target_temp].as<int>();
   }
 
+  // handle target mode
   if (json.containsKey(ap_target_mode))
   {
     target_mode = json[ap_target_mode].as<int>();
@@ -528,7 +665,6 @@ void loop()
   if (json.containsKey(ap_flame_state))
   {
     static unsigned long last_flip = millis();
-    int color = 0xffff;
     int value_fst = json[ap_flame_state].as<int>();
     if (value_fst == 1 && current_mode == 1)
     {
@@ -546,28 +682,24 @@ void loop()
           tft_draw_bitmap(155, 12, fire, 48, 48);
         }
       }
-      color = 0x0000;
     }
     else
     {
       tft_clear_rect(155, 12, 48, 48, 0x0000);
       tft_draw_round_rect(160, 60, 38, 5, 5, 0xB5B6);
     }
-    if (target_index == 1)
-      tft_write_transperant(172, 30, 3, "W", color);
-    else
-      tft_write_transperant(172, 30, 3, "H", color);
   }
 
   // draw the switch
-  tft_draw_round_rect(210, 20, 15, 40, 5, target_mode ? 0x0F80 : 0xF800);
+  tft_draw_round_rect(209, 20, 16, 40, 5, target_mode ? 0x0F80 : 0xBDF7);
   if (target_mode)
   {
-    tft_draw_round_rect(210, 20, 15, 22, 5, 0x0464);
+    tft_draw_round_rect(209, 20, 16, 22, 5, 0x0464);
   }
   else
   {
-    tft_draw_round_rect(210, 38, 15, 22, 5, 0x7000);
+    tft_draw_round_rect(209, 38, 16, 22, 5, 0x7BCF);
   }
+  tft_write_transperant(212, 24, 2, target_index == 1 ? "W" : "H", 0xFFFF);
   tft_update();
 }
