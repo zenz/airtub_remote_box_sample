@@ -18,6 +18,16 @@
 #define TFT_BL 38
 #define SPI_SPEED 40000000
 
+#define LIGHT_GREEN 0x0F80
+#define DARK_GREEN 0x0464
+#define LIGHT_GRAY 0xBDF7
+#define DARK_GRAY 0x7BCF
+#define WHITE 0xFFFF
+#define BLACK 0x0000
+#define YELLOW 0xFFE0
+#define RED 0xF800
+#define BLUE 0x5D1C
+
 void tft_set_backlight(bool state);
 void tft_init();
 void tft_init(bool backlight);

@@ -12,6 +12,23 @@
 
 #include "../images/fire.h"
 #include "../images/fire_rev.h"
+#include "../images/big_fire.h"
+#include "../images/big_fire_rev.h"
+#include "../images/plug.h"
+#include "../images/battery.h"
+
+#ifdef USE_DEEP_SLEEP
+#define WAKEUP_PIN GPIO_NUM_18
+#define WAKEUP_LEVEL LOW
+#ifndef DEEPSLEEP_TIME
+#define DEEPSLEEP_TIME 30000 // 30 seconds
+#endif
+#endif
+
+#define SEND_TIMEOUT 6000 // 6 seconds
+
+#define POWER_CABLE_PIN 39
+uint8_t power = 0;
 
 #define LOWER_CASE(x) (                                     \
     {                                                       \
@@ -24,7 +41,6 @@
       }                                                     \
     })
 
-WiFiManager wm;
 bool shouldSaveConfig = false;
 bool configured = false;
 
@@ -41,6 +57,7 @@ int target_temp = 0;
 int target_mode = 0;
 bool modified = false;
 unsigned long modified_ts = millis();
+unsigned long active_ts = millis();
 
 struct devices
 {
@@ -54,6 +71,8 @@ uint8_t CH_MODE = 1;
 
 const char ap_flame_state[] = "fst";
 const char ap_fault_state[] = "flt";
+const char ap_modulate[] = "mod";
+bool big_modulate = false;
 bool was_fault = false;
 
 // for DHW
@@ -140,18 +159,21 @@ void change_control_target()
   }
 
   // save running state
-  devs.dev_active = target_index;
-  EEPROM.begin(512);
-  EEPROM.put(0, devs);
-  if (EEPROM.commit())
+  if (devs.dev_active != target_index)
   {
-    Serial.println("Settings saved");
+    devs.dev_active = target_index;
+    EEPROM.begin(512);
+    EEPROM.put(0, devs);
+    if (EEPROM.commit())
+    {
+      Serial.println("Settings saved");
+    }
+    else
+    {
+      Serial.println("EEPROM error");
+    }
+    EEPROM.end();
   }
-  else
-  {
-    Serial.println("EEPROM error");
-  }
-  EEPROM.end();
 
   target_index++;
   if (target_index > 1)
@@ -180,29 +202,31 @@ inline void xor_crypt(uint8_t *buffer, int buf_len, const uint8_t *key, int key_
 /* We need to search the Airtub Partner and get it's IP to send data */
 bool get_airtub_device_ip()
 {
-  if (addr == IPAddress(0, 0, 0, 0))
+  if (addr != IPAddress(0, 0, 0, 0))
   {
-    int n = MDNS.queryService("airtub", "udp");
-    if (n > 0)
+    return true;
+  }
+
+  int n = MDNS.queryService("airtub", "udp");
+  if (n == 0)
+  {
+    Serial.println("No device found!");
+    return false;
+  }
+
+  bool found = false;
+  for (int i = 0; i < n; ++i)
+  {
+    if (MDNS.hostname(i) == String(devs.dev_name))
     {
-      for (int i = 0; i < n; ++i)
-      {
-        if (MDNS.hostname(i) == String(devs.dev_name))
-        {
-          Serial.printf("Find device %s with IP %s\n", MDNS.hostname(i).c_str(), MDNS.IP(i).toString().c_str());
-          addr = MDNS.IP(i);
-          return true;
-          break;
-        }
-      }
-    }
-    else
-    {
-      Serial.println("No device found!");
-      return false;
+      Serial.printf("Find device %s with IP %s\n", MDNS.hostname(i).c_str(), MDNS.IP(i).toString().c_str());
+      addr = MDNS.IP(i);
+      found = true;
+      break;
     }
   }
-  return true;
+
+  return found;
 }
 
 void send_udp_msg(udp_msg_format_t msg)
@@ -215,24 +239,31 @@ void send_udp_msg(udp_msg_format_t msg)
   xor_crypt((uint8_t *)msg.data, msg.len, (uint8_t *)devs.dev_password, strlen(devs.dev_password)); // 加密
   msg.crc = crc32Buffer(msg.data, msg.len);
 
-  if (addr != IPAddress(0, 0, 0, 0))
+  if (addr == IPAddress(0, 0, 0, 0))
   {
-    Serial.println("Sending UDP message");
-    do
+    Serial.println("No device found! Do not send anything.");
+    return;
+  }
+
+  Serial.println("Sending UDP message");
+  unsigned long start_ts = millis();
+  do
+  {
+    if (millis() - last_sent_ts > 1000)
     {
-      if (millis() - last_sent_ts > 1000)
-      {
-        udp.writeTo((const uint8_t *)&msg, sizeof(msg), addr, UDP_PORT);
-        last_sent_ts = millis();
-      }
-    } while (!msg_sent);
-  }
-  else
-  {
-    Serial.println("No device found! Do not send anythong.");
-  }
+      udp.writeTo((const uint8_t *)&msg, sizeof(msg), addr, UDP_PORT);
+      last_sent_ts = millis();
+    }
+    // 超时退出循环
+    if (millis() - start_ts > SEND_TIMEOUT)
+    {
+      Serial.println("Send message timeout!");
+      break;
+    }
+  } while (!msg_sent);
 }
 
+// change target temp
 void change_value()
 {
   char buffer[180];
@@ -248,6 +279,7 @@ void change_value()
   send_udp_msg(msg_send);
 }
 
+// change target mode
 void change_mode(int mode)
 {
   char buffer[180];
@@ -264,6 +296,7 @@ void change_mode(int mode)
   send_udp_msg(msg_send);
 }
 
+// remove specified substring
 bool removeSubstring(char *str, const char *toRemove)
 {
   char *pos = strstr(str, toRemove);
@@ -305,19 +338,16 @@ int handleEC11Event()
       pos = newPos;
       rotation = (int)(encoder->getDirection());
     }
+    active_ts = millis();
+  }
+
+  if (buttonState != 0)
+  {
+    active_ts = millis();
   }
 
   switch (buttonState)
   {
-  // a negative number to indicate a long pressed time
-  case -5:
-  case -6:
-  case -7:
-  case -8:
-  case -9:
-    Serial.println("Long pressed, restart!");
-    reset_esp();
-    break;
   case 1:
     if (!show_qrcode)
     {
@@ -347,7 +377,7 @@ int handleEC11Event()
     if (!show_qrcode)
     {
       qrcode_shown = false;
-      tft_clear(0x0000);
+      tft_clear(BLACK);
     }
     break;
   default:
@@ -412,23 +442,24 @@ void udp_callback(AsyncUDPPacket &packet)
   // }
 }
 
+// callback for WiFiManager to save parameters
 void saveParamCallback()
 {
   shouldSaveConfig = true;
+}
+
+void deep_sleep_now()
+{
+  esp_sleep_enable_ext0_wakeup(WAKEUP_PIN, WAKEUP_LEVEL);
+  esp_deep_sleep_start();
 }
 
 void setup(void)
 {
   Serial.begin(115200);
 
-  pinMode(PIN_BTN, INPUT_PULLUP); // Must PULLUP first to make button click work correctly
-  ec11_init();                    // Initialize button & rotary encoder
-  int critical = digitalRead(PIN_BTN);
-  if (critical == LOW)
-  {
-    Serial.println("Reset Remote Box!");
-    reset_esp();
-  }
+  pinMode(POWER_CABLE_PIN, INPUT);
+  power = digitalRead(POWER_CABLE_PIN);
 
   EEPROM.begin(512);
   EEPROM.get(0, devs);
@@ -444,7 +475,7 @@ void setup(void)
   {
     configured = true;
     CH_MODE = devs.dev_mode;
-    target_index = devs.dev_active;
+    target_index = devs.dev_active ? 1 : 0;
     Serial.printf("Device: %s, Password: %s, Mode: %d， Active: %d\n", devs.dev_name, devs.dev_password, devs.dev_mode, devs.dev_active);
   }
 
@@ -452,70 +483,117 @@ void setup(void)
   sprintf(my_name, "AIRCUBE-%08X", (uint32_t)chipid);
 
   tft_init(true);
-  Serial.println("Initialized");
-  tft_clear(0x0000);
-  tft_write(20, 26, 2, "PREPAIRING...", 0xFFE0);
+  Serial.println("Display ready.");
+
+  if (power == HIGH)
+  {
+    Serial.println("CABLE_PLUGINED!");
+  }
+
+  pinMode(PIN_BTN, INPUT_PULLUP); // Must PULLUP first to make button click work correctly
+  ec11_init();                    // Initialize button & rotary encoder
+  int critical = digitalRead(PIN_BTN);
+  if (critical == LOW)
+  {
+    Serial.println("Reset Remote Box!");
+    tft_clear(BLACK);
+    tft_write(20, 26, 2, "ERASING...", YELLOW);
+    tft_update();
+    delay(500);
+    reset_esp();
+  }
 
   if (!configured)
   {
     Serial.println("Not configured");
-    tft_write(20, 46, 2, "WAITING FOR", 0xFFE0);
-    tft_write(20, 66, 2, "CONFIGURATION", 0xFFE0);
-    wm.erase(true);
+    tft_clear(BLACK);
+    tft_write(20, 26, 2, "NEW DEVICE", YELLOW);
+    tft_write(20, 46, 2, "WAITING FOR", YELLOW);
+    tft_write(20, 66, 2, "CONFIGURATION", YELLOW);
+  }
+  else
+  {
+    tft_clear(BLACK);
+    tft_write(20, 26, 2, "PREPAIRING...", YELLOW);
+    if (power == HIGH)
+    {
+      tft_write(20, 46, 2, "USB MODE", YELLOW);
+    }
+    else
+    {
+      tft_write(20, 46, 2, "BATTERY MODE", YELLOW);
+    }
   }
   tft_update();
   delay(10);
 
-  WiFiManagerParameter custom_device("dev", "device serial num:", "", 14, "autocapitalize='none' maxlength=12 required pattern='[a-zA-Z0-9]*' placeholder=\"boiler serial num\"");
-  WiFiManagerParameter custom_password("pass", "device password:", "", 14, "maxlength=12 required type=\"password\" placeholder=\"boiler password\"");
-  WiFiManagerParameter custom_mode("mode", "heating mode", "", 2, "required type=\"number\" min=\"0\" max=\"1\" placeholder=\"0-manual 1-auto\"");
+  WiFi.setSleep(false);
 
-  wm.addParameter(&custom_device);
-  wm.addParameter(&custom_password);
-  wm.addParameter(&custom_mode);
-  wm.setSaveParamsCallback(saveParamCallback);
-
-  std::vector<const char *> menu = {"wifi"};
-  wm.setDebugOutput(true);
-  wm.setCountry("CN");
-  wm.setHostname(my_name);
-  wm.setDarkMode(true);
-  wm.setConfigPortalTimeout(180);
-  wm.setMenu(menu);
-  wm.setConnectTimeout(180);
-  bool result = wm.autoConnect(my_name, "4008206306");
-  if (!result)
+  if (!configured)
   {
-    Serial.println("Failed to setup WiFi");
+    WiFiManager wm;
+    wm.erase(true); // erase all saved settings
+    std::vector<const char *> menu = {"wifi"};
+    wm.setDebugOutput(true);
+    wm.setCountry("CN");
+    wm.setHostname(my_name);
+    wm.setDarkMode(true);
+    wm.setConfigPortalTimeout(180);
+    wm.setMenu(menu);
+    wm.setConnectTimeout(180);
+    wm.setMinimumSignalQuality(20);
+    WiFiManagerParameter custom_device("dev", "device serial num:", "", 14, "autocapitalize='none' maxlength=12 required pattern='[a-zA-Z0-9]*' placeholder=\"boiler serial num\"");
+    WiFiManagerParameter custom_password("pass", "device password:", "", 14, "maxlength=12 required type=\"password\" placeholder=\"boiler password\"");
+    WiFiManagerParameter custom_mode("mode", "heating mode", "", 2, "required type=\"number\" min=\"0\" max=\"1\" placeholder=\"0-manual 1-auto\"");
+
+    wm.addParameter(&custom_device);
+    wm.addParameter(&custom_password);
+    wm.addParameter(&custom_mode);
+    wm.setSaveParamsCallback(saveParamCallback);
+
+    bool result = wm.autoConnect(my_name);
+    if (!result)
+    {
+      Serial.println("Failed to setup WiFi");
+#ifdef USE_DEEP_SLEEP
+      deep_sleep_now();
+#endif
+    }
+    else
+    {
+      if (shouldSaveConfig)
+      {
+        Serial.println("Should save parameters");
+        strcpy(devs.dev_name, custom_device.getValue());
+        LOWER_CASE(devs.dev_password); // always lowercase the serial number
+        strcpy(devs.dev_password, custom_password.getValue());
+        devs.dev_mode = atoi(custom_mode.getValue());
+        EEPROM.begin(512);
+        EEPROM.put(0, devs);
+        if (EEPROM.commit())
+        {
+          Serial.println("Settings saved");
+        }
+        else
+        {
+          Serial.println("EEPROM error");
+        }
+        EEPROM.end();
+        ESP.restart();
+      }
+    }
   }
   else
   {
-    if (shouldSaveConfig)
+    // already configured
+    WiFi.begin();
+    while (WiFi.status() != WL_CONNECTED)
     {
-      Serial.println("Should save parameters");
-      strcpy(devs.dev_name, custom_device.getValue());
-      LOWER_CASE(devs.dev_password); // always lowercase the serial number
-      strcpy(devs.dev_password, custom_password.getValue());
-      devs.dev_mode = atoi(custom_mode.getValue());
-      EEPROM.begin(512);
-      EEPROM.put(0, devs);
-      if (EEPROM.commit())
-      {
-        Serial.println("Settings saved");
-      }
-      else
-      {
-        Serial.println("EEPROM error");
-      }
-      EEPROM.end();
-      ESP.restart();
+      delay(500);
+      Serial.print(".");
     }
+    Serial.println("");
   }
-
-  WiFi.mode(WIFI_STA);
-  WiFi.enableLongRange(true);
-  WiFi.setTxPower(WIFI_POWER_19dBm);
-  WiFi.setSleep(false);
 
   if (mdns_init() != ESP_OK)
   {
@@ -533,22 +611,36 @@ void setup(void)
     Serial.println("UDP Listen failed");
   }
 
+  // seeking airtub partner
+  tft_clear(BLACK);
+  tft_write(20, 26, 2, "SEEKING", YELLOW);
+  tft_write(20, 46, 2, "AIRTUB PARNER", YELLOW);
+  tft_write(20, 66, 2, "PLEASE WAIT", YELLOW);
+  tft_update();
   while (!get_airtub_device_ip())
   {
-    tft_clear(0x0000);
-    tft_write(20, 26, 2, "SEEKING", 0xFFE0);
-    tft_write(20, 46, 2, "AIRTUB PARNER", 0xFFE0);
-    tft_write(20, 66, 2, "PLEASE WAIT", 0xFFE0);
-    tft_update();
     yield();
   };
+  Serial.printf("Airtub Partner IP: %s\n", addr.toString());
   change_control_target();
-  tft_clear(0x0000);
+  tft_clear(BLACK);
 }
 
 void loop()
 {
   static bool fire_fliped = false;
+
+  power = digitalRead(POWER_CABLE_PIN);
+  if (power == HIGH)
+  {
+    tft_draw_bitmap(5, 5, plug, 25, 16);
+    active_ts = millis(); // always keep active if usb powering
+  }
+  else
+  {
+    tft_draw_bitmap(5, 5, battery, 25, 16);
+  }
+
   char buffer[10]; // Make sure this is large enough for your value
 
   const int rotary = handleEC11Event(); // Handle button and rotary events
@@ -559,6 +651,7 @@ void loop()
   {
     modified = true;
     modified_ts = millis();
+    active_ts = millis();
   }
 
   if (millis() - modified_ts > 10000 && modified)
@@ -577,7 +670,7 @@ void loop()
       tft_gen_qrcode(airtub_partner);
       tft_update();
     }
-
+    active_ts = millis();
     return;
   }
 
@@ -589,8 +682,8 @@ void loop()
     {
       was_fault = true;
       sprintf(buffer, "E%02D", value_flt);
-      tft_clear(0x0000);
-      tft_write(20, 26, 12, buffer, 0xF800);
+      tft_clear(BLACK);
+      tft_write(20, 26, 12, buffer, RED);
       tft_update();
       return;
     }
@@ -598,7 +691,7 @@ void loop()
   else if (was_fault)
   {
     was_fault = false;
-    tft_clear(0x0000);
+    tft_clear(BLACK);
   }
 
   // handling current temp
@@ -618,7 +711,7 @@ void loop()
     }
     sprintf(buffer, "%02d", value_temp);
     const char *value = buffer;
-    tft_write(15, 26, 12, value, 0xFFE0);
+    tft_write(15, 26, 12, value, YELLOW);
   }
 
   // handling target temp
@@ -641,25 +734,41 @@ void loop()
 
   target_temp += rotary;
   target_temp = constrain(target_temp, MIN_TEMP, MAX_TEMP); // Limit target temperature
-  if (target_temp != value_target_temp && modified)
+  if (target_temp != 0)
   {
-    sprintf(buffer, "%02d", target_temp);
-    const char *value = buffer;
-    // Serial.printf("Local Settings: %s\n", value);
-    tft_write(160, 70, 6, value, 0xF800);
-  }
-  else
-  {
-    sprintf(buffer, "%02d", value_target_temp);
-    const char *value = buffer;
-    // Serial.printf("tct: %s\n", value);
-    tft_write(160, 70, 6, value, 0x5D1C);
+    if (target_temp != value_target_temp && modified)
+    {
+      sprintf(buffer, "%02d", target_temp);
+      const char *value = buffer;
+      // Serial.printf("Local Settings: %s\n", value);
+      tft_write(160, 70, 6, value, RED);
+    }
+    else
+    {
+      sprintf(buffer, "%02d", value_target_temp);
+      const char *value = buffer;
+      // Serial.printf("tct: %s\n", value);
+      tft_write(160, 70, 6, value, BLUE);
+    }
   }
 
   int current_mode = 0;
   if (json.containsKey(ap_current_mode))
   {
     current_mode = json[ap_current_mode].as<int>();
+  }
+
+  if (json.containsKey(ap_modulate))
+  {
+    int value_modulate = json[ap_modulate].as<int>();
+    if (value_modulate > 60)
+    {
+      big_modulate = true;
+    }
+    else
+    {
+      big_modulate = false;
+    }
   }
 
   if (json.containsKey(ap_flame_state))
@@ -675,31 +784,41 @@ void loop()
 
         if (fire_fliped == false)
         {
-          tft_draw_bitmap(155, 12, fire_rev, 48, 48);
+          tft_draw_bitmap(155, 12, big_modulate ? big_fire_rev : fire_rev, 48, 48);
         }
         else
         {
-          tft_draw_bitmap(155, 12, fire, 48, 48);
+          tft_draw_bitmap(155, 12, big_modulate ? big_fire : fire, 48, 48);
         }
       }
     }
     else
     {
-      tft_clear_rect(155, 12, 48, 48, 0x0000);
-      tft_draw_round_rect(160, 60, 38, 5, 5, 0xB5B6);
+      tft_clear_rect(155, 12, 48, 48, BLACK);
+      tft_draw_round_rect(160, 60, 38, 5, 5, LIGHT_GRAY);
     }
   }
 
   // draw the switch
-  tft_draw_round_rect(209, 20, 16, 40, 5, target_mode ? 0x0F80 : 0xBDF7);
-  if (target_mode)
+  if (json.containsKey(ap_target_mode))
   {
-    tft_draw_round_rect(209, 20, 16, 22, 5, 0x0464);
+    tft_draw_round_rect(209, 20, 16, 40, 5, target_mode ? LIGHT_GREEN : LIGHT_GRAY);
+    if (target_mode)
+    {
+      tft_draw_round_rect(209, 20, 16, 22, 5, DARK_GREEN);
+    }
+    else
+    {
+      tft_draw_round_rect(209, 38, 16, 22, 5, DARK_GRAY);
+    }
+    tft_write_transperant(212, 24, 2, target_index == 1 ? "W" : "H", WHITE);
   }
-  else
-  {
-    tft_draw_round_rect(209, 38, 16, 22, 5, 0x7BCF);
-  }
-  tft_write_transperant(212, 24, 2, target_index == 1 ? "W" : "H", 0xFFFF);
   tft_update();
+
+#ifdef USE_DEEP_SLEEP
+  if (millis() - active_ts > DEEPSLEEP_TIME && power == LOW)
+  {
+    deep_sleep_now();
+  }
+#endif
 }

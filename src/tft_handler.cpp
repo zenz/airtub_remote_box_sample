@@ -22,11 +22,12 @@ void tft_init()
     _tft->setSPISpeed(SPI_SPEED);
     uint16_t time = millis();
     _tft->fillScreen(ST77XX_BLACK);
+#ifdef TFT_SPEED_TEST
     // time = millis() - time;
     // Serial.print("fillScreen spend:");
     // Serial.print(time, DEC);
     // Serial.println("ms");
-
+#endif
     _tft->setRotation(3);
 }
 

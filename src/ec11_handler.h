@@ -5,7 +5,7 @@
 #include <OneButton.h>
 #include <RotaryEncoder.h>
 
-#define PIN_BTN 40
+#define PIN_BTN 18
 #define LONG_PRESS_MS 2000
 #define START_TICKS 1000
 #define START_TICKS_RECIPROCAL 0.001
