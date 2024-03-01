@@ -296,6 +296,22 @@ void change_mode(int mode)
   send_udp_msg(msg_send);
 }
 
+// reset error
+void reset_error()
+{
+  char buffer[180];
+  udp_msg_format_t msg_send;
+  JsonDocument json;
+  json["tar"] = devs.dev_name;
+  json["dev"] = my_name;
+  json["clr"] = 1;
+  msg_send.type = 3; // AIRCUBE
+  msg_send.len = serializeJson(json, buffer, 180);
+  strcpy(msg_send.data, buffer);
+
+  send_udp_msg(msg_send);
+}
+
 // remove specified substring
 bool removeSubstring(char *str, const char *toRemove)
 {
@@ -348,6 +364,15 @@ int handleEC11Event()
 
   switch (buttonState)
   {
+  case -3:
+  case -4:
+  case -5:
+    if (!show_qrcode)
+    {
+      Serial.println("Long pressed, reset error.");
+      reset_error();
+    }
+    break;
   case 1:
     if (!show_qrcode)
     {
