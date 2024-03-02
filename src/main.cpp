@@ -60,6 +60,7 @@ IPAddress addr = IPAddress(0, 0, 0, 0);
 IPAddress UDP_BCAST_GRP = IPAddress(224, 0, 1, 3);
 udp_msg_format_t msg;
 bool msg_sent = false;
+unsigned long last_mcast_ts = millis();
 
 JsonDocument json;
 int target_temp = 0;
@@ -464,6 +465,7 @@ void udp_callback(AsyncUDPPacket &packet)
     padWithSpaces(msg.data, 180);
     update_msg_data(msg.data);
     Serial.printf("MCAST JSON: %s - %lu\n", json.as<String>().c_str(), time_stamp);
+    last_mcast_ts = millis();
   }
   else if (strstr(msg.data, target_reply) != nullptr)
   {
@@ -624,6 +626,10 @@ void setup(void)
   else
   {
     // already configured
+    WiFi.mode(WIFI_STA);
+    WiFi.setHostname(my_name);
+    WiFi.setTxPower(WIFI_POWER_17dBm);
+    WiFi.enableLongRange(1);
     WiFi.begin();
     while (WiFi.status() != WL_CONNECTED)
     {
@@ -674,7 +680,6 @@ void loop()
   if (power == HIGH)
   {
     tft_draw_bitmap(5, 5, plug, 25, 16);
-    active_ts = millis(); // always keep active if usb powering
   }
   else
   {
@@ -854,6 +859,14 @@ void loop()
     tft_write_transperant(212, 24, 2, target_index == 1 ? "W" : "H", WHITE);
   }
   tft_update();
+
+  if (millis() - last_mcast_ts > 20000)
+  {
+    Serial.println("No multicast message received, Reconnect WiFi and seeking Airtub Partner again.");
+    WiFi.reconnect();
+    addr = IPAddress(0, 0, 0, 0);
+    last_mcast_ts = millis();
+  }
 
 #ifdef USE_DEEP_SLEEP
   if (millis() - active_ts > DEEPSLEEP_TIME && power == LOW)
