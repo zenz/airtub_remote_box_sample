@@ -27,8 +27,17 @@
 
 #define SEND_TIMEOUT 6000 // 6 seconds
 
+#ifdef BOARD_V1
+#define POWER_CABLE_PIN 40
+#else
 #define POWER_CABLE_PIN 39
+#endif
+
+#ifdef POWER_DETECT
 uint8_t power = 0;
+#else
+uint8_t power = 1;
+#endif
 
 #define LOWER_CASE(x) (                                     \
     {                                                       \
@@ -475,16 +484,20 @@ void saveParamCallback()
 
 void deep_sleep_now()
 {
+#ifdef USE_DEEP_SLEEP
   esp_sleep_enable_ext0_wakeup(WAKEUP_PIN, WAKEUP_LEVEL);
   esp_deep_sleep_start();
+#endif
 }
 
 void setup(void)
 {
   Serial.begin(115200);
 
+#ifdef POWER_DETECT
   pinMode(POWER_CABLE_PIN, INPUT);
   power = digitalRead(POWER_CABLE_PIN);
+#endif
 
   EEPROM.begin(512);
   EEPROM.get(0, devs);
@@ -655,7 +668,9 @@ void loop()
 {
   static bool fire_fliped = false;
 
+#ifdef POWER_DETECT
   power = digitalRead(POWER_CABLE_PIN);
+#endif
   if (power == HIGH)
   {
     tft_draw_bitmap(5, 5, plug, 25, 16);
