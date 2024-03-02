@@ -860,9 +860,10 @@ void loop()
   }
   tft_update();
 
-  if (millis() - last_mcast_ts > 20000)
+  if (millis() - last_mcast_ts > MCAST_TIMEOUT)
   {
-    Serial.println("No multicast message received, Reconnect WiFi and seeking Airtub Partner again.");
+    Serial.printf("No multicast message received more than %d secs,", MCAST_TIMEOUT / 1000);
+    Serial.println("Reconnect WiFi and seeking Airtub Partner again.");
     WiFi.reconnect();
     addr = IPAddress(0, 0, 0, 0);
     last_mcast_ts = millis();
