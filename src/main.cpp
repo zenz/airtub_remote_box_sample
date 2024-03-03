@@ -635,6 +635,10 @@ void setup(void)
     {
       delay(500);
       Serial.print(".");
+      if (millis() - active_ts > DEEPSLEEP_TIME)
+      {
+        deep_sleep_now(); // 超过设定时间未连上WiFi，进入休眠。
+      }
     }
     Serial.println("");
   }
