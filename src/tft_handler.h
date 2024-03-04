@@ -27,6 +27,7 @@
 #define YELLOW 0xFFE0
 #define RED 0xF800
 #define BLUE 0x5D1C
+#define ORANGE 0xF2A1
 
 void tft_set_backlight(bool state);
 void tft_init();

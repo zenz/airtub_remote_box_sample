@@ -19,6 +19,9 @@
 #include "../images/wifi_good.h"
 #include "../images/wifi_bad.h"
 #include "../images/wifi_normal.h"
+#include "../images/shower.h"
+#include "../images/radiator.h"
+#include "../images/room.h"
 
 #ifdef USE_DEEP_SLEEP
 #define WAKEUP_PIN GPIO_NUM_18
@@ -699,12 +702,12 @@ void loop()
 #endif
   if (power == HIGH)
   {
-    tft_draw_bitmap(5, 5, plug, 25, 16);
+    tft_draw_bitmap(10, 5, plug, 25, 16);
     active_ts = millis();
   }
   else
   {
-    tft_draw_bitmap(5, 5, battery, 25, 16);
+    tft_draw_bitmap(10, 5, battery, 25, 16);
   }
 
   char buffer[10]; // Make sure this is large enough for your value
@@ -715,15 +718,31 @@ void loop()
 
   if (wifi_get_rssi() > 70)
   {
-    tft_draw_bitmap(40, 5, wifi_good, 16, 16);
+    tft_draw_bitmap(45, 5, wifi_good, 16, 16);
   }
   else if (wifi_get_rssi() > 30)
   {
-    tft_draw_bitmap(40, 5, wifi_normal, 16, 16);
+    tft_draw_bitmap(45, 5, wifi_normal, 16, 16);
   }
   else
   {
-    tft_draw_bitmap(40, 5, wifi_bad, 16, 16);
+    tft_draw_bitmap(45, 5, wifi_bad, 16, 16);
+  }
+
+  if (target_index == 1)
+  {
+    tft_draw_bitmap(70, 5, shower, 16, 16);
+  }
+  else
+  {
+    if (CH_MODE)
+    {
+      tft_draw_bitmap(70, 5, room, 16, 16);
+    }
+    else
+    {
+      tft_draw_bitmap(70, 5, radiator, 16, 16);
+    }
   }
 
   if (rotary != 0)
@@ -890,7 +909,7 @@ void loop()
     {
       tft_draw_round_rect(209, 38, 16, 22, 5, DARK_GRAY);
     }
-    tft_write_transperant(212, 24, 2, target_index == 1 ? "W" : "H", WHITE);
+    tft_write(10, 120, 1, "SINGLE:SET,DOUBLE:ON/OFF,TRIPLE:FUNC", ORANGE);
   }
   tft_update();
 
