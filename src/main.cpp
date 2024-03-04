@@ -16,6 +16,9 @@
 #include "../images/big_fire_rev.h"
 #include "../images/plug.h"
 #include "../images/battery.h"
+#include "../images/wifi_good.h"
+#include "../images/wifi_bad.h"
+#include "../images/wifi_normal.h"
 
 #ifdef USE_DEEP_SLEEP
 #define WAKEUP_PIN GPIO_NUM_18
@@ -130,6 +133,25 @@ char my_name[32];
 
 bool show_qrcode = false;
 bool qrcode_shown = false;
+
+// Get WiFi Signal Quality
+int wifi_get_rssi()
+{
+  int8_t rssi = WiFi.RSSI();
+
+  if (rssi <= -100)
+  {
+    return 0;
+  }
+  else if (rssi >= -50)
+  {
+    return 100;
+  }
+  else
+  {
+    return 2 * (rssi + 100);
+  }
+}
 
 void change_control_target()
 {
@@ -690,6 +712,19 @@ void loop()
   const int rotary = handleEC11Event(); // Handle button and rotary events
 
   get_airtub_device_ip();
+
+  if (wifi_get_rssi() > 70)
+  {
+    tft_draw_bitmap(40, 5, wifi_good, 16, 16);
+  }
+  else if (wifi_get_rssi() > 30)
+  {
+    tft_draw_bitmap(40, 5, wifi_normal, 16, 16);
+  }
+  else
+  {
+    tft_draw_bitmap(40, 5, wifi_bad, 16, 16);
+  }
 
   if (rotary != 0)
   {
