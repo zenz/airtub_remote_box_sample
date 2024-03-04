@@ -20,9 +20,12 @@
 #ifdef USE_DEEP_SLEEP
 #define WAKEUP_PIN GPIO_NUM_18
 #define WAKEUP_LEVEL LOW
+RTC_DATA_ATTR int dev_active = 0;
 #ifndef DEEPSLEEP_TIME
 #define DEEPSLEEP_TIME 30000 // 30 seconds
 #endif
+#else
+int dev_active = 0;
 #endif
 
 #define SEND_TIMEOUT 6000 // 6 seconds
@@ -74,7 +77,6 @@ struct devices
   char dev_name[18];     // Your registered device serial number
   char dev_password[18]; // Your registered device password
   uint8_t dev_mode;      // 0-manual, 1-auto-temp control
-  uint8_t dev_active;    // 0-dhw, 1-heating
 } devs;
 
 uint8_t CH_MODE = 1;
@@ -169,20 +171,9 @@ void change_control_target()
   }
 
   // save running state
-  if (devs.dev_active != target_index)
+  if (dev_active != target_index)
   {
-    devs.dev_active = target_index;
-    EEPROM.begin(512);
-    EEPROM.put(0, devs);
-    if (EEPROM.commit())
-    {
-      Serial.println("Settings saved");
-    }
-    else
-    {
-      Serial.println("EEPROM error");
-    }
-    EEPROM.end();
+    dev_active = target_index;
   }
 
   target_index++;
@@ -496,6 +487,9 @@ void setup(void)
 {
   Serial.begin(115200);
 
+  pinMode(PIN_BTN, INPUT_PULLUP); // Must PULLUP first to make button click work correctly
+  ec11_init();                    // Initialize button & rotary encoder
+
 #ifdef POWER_DETECT
   pinMode(POWER_CABLE_PIN, INPUT);
   power = digitalRead(POWER_CABLE_PIN);
@@ -515,8 +509,8 @@ void setup(void)
   {
     configured = true;
     CH_MODE = devs.dev_mode;
-    target_index = devs.dev_active ? 1 : 0;
-    Serial.printf("Device: %s, Password: %s, Mode: %d， Active: %d\n", devs.dev_name, devs.dev_password, devs.dev_mode, devs.dev_active);
+    target_index = dev_active ? 1 : 0;
+    Serial.printf("Device: %s, Password: %s, Mode: %d， Active: %d\n", devs.dev_name, devs.dev_password, devs.dev_mode, dev_active);
   }
 
   uint64_t chipid = ESP.getEfuseMac(); // The chip ID is essentially its MAC address(length: 6 bytes).
@@ -530,8 +524,6 @@ void setup(void)
     Serial.println("CABLE_PLUGINED!");
   }
 
-  pinMode(PIN_BTN, INPUT_PULLUP); // Must PULLUP first to make button click work correctly
-  ec11_init();                    // Initialize button & rotary encoder
   int critical = digitalRead(PIN_BTN);
   if (critical == LOW)
   {
@@ -557,12 +549,14 @@ void setup(void)
     tft_write(20, 26, 2, "PREPAIRING...", YELLOW);
     if (power == HIGH)
     {
-      tft_write(20, 46, 2, "USB MODE", YELLOW);
+      tft_write(20, 46, 2, "POWER: USB", YELLOW);
     }
     else
     {
-      tft_write(20, 46, 2, "BATTERY MODE", YELLOW);
+      tft_write(20, 46, 2, "POWER: BATTERY", YELLOW);
     }
+
+    tft_write(20, 66, 2, "CONNECT WIFI", YELLOW);
   }
   tft_update();
   delay(10);
@@ -684,6 +678,7 @@ void loop()
   if (power == HIGH)
   {
     tft_draw_bitmap(5, 5, plug, 25, 16);
+    active_ts = millis();
   }
   else
   {
