@@ -22,6 +22,9 @@
 #include "../images/shower.h"
 #include "../images/radiator.h"
 #include "../images/room.h"
+#ifdef USE_CHINESE
+#include "../images/operate.h"
+#endif
 
 #ifdef USE_DEEP_SLEEP
 #define WAKEUP_PIN GPIO_NUM_18
@@ -624,7 +627,7 @@ void setup(void)
       {
         Serial.println("Should save parameters");
         strcpy(devs.dev_name, custom_device.getValue());
-        LOWER_CASE(devs.dev_password); // always lowercase the serial number
+        LOWER_CASE(devs.dev_name); // always lowercase the serial number
         strcpy(devs.dev_password, custom_password.getValue());
         devs.dev_mode = atoi(custom_mode.getValue());
         EEPROM.begin(512);
@@ -909,7 +912,11 @@ void loop()
     {
       tft_draw_round_rect(209, 38, 16, 22, 5, DARK_GRAY);
     }
+#ifdef USE_CHINESE
+    tft_draw_bitmap(0, 115, operate, 240, 12);
+#else
     tft_write(10, 120, 1, "SINGLE:SET,DOUBLE:ON/OFF,TRIPLE:FUNC", ORANGE);
+#endif
   }
   tft_update();
 
