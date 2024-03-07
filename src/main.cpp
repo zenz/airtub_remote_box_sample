@@ -10,10 +10,12 @@
 #include "ec11_handler.h"
 #include "udp_handler.h"
 
-#include "../images/fire.h"
-#include "../images/fire_rev.h"
-#include "../images/big_fire.h"
-#include "../images/big_fire_rev.h"
+#include "../images/fire_small.h"
+#include "../images/fire_small_rev.h"
+#include "../images/fire_normal.h"
+#include "../images/fire_normal_rev.h"
+#include "../images/fire_large.h"
+#include "../images/fire_large_rev.h"
 #include "../images/plug.h"
 #include "../images/battery.h"
 #include "../images/wifi_good.h"
@@ -22,6 +24,7 @@
 #include "../images/shower.h"
 #include "../images/radiator.h"
 #include "../images/room.h"
+#include "../images/outdoor.h"
 #ifdef USE_CHINESE
 #include "../images/operate.h"
 #endif
@@ -85,6 +88,7 @@ struct devices
 {
   char dev_name[18];     // Your registered device serial number
   char dev_password[18]; // Your registered device password
+  char dev_ssid[32];     // Your WiFi SSID
   uint8_t dev_mode;      // 0-manual, 1-auto-temp control
 } devs;
 
@@ -93,7 +97,7 @@ uint8_t CH_MODE = 1;
 const char ap_flame_state[] = "fst";
 const char ap_fault_state[] = "flt";
 const char ap_modulate[] = "mod";
-bool big_modulate = false;
+int fire_modulate = 0;
 bool was_fault = false;
 
 // for DHW
@@ -583,8 +587,8 @@ void setup(void)
     {
       tft_write(20, 46, 2, "POWER: BATTERY", YELLOW);
     }
-
     tft_write(20, 66, 2, "CONNECT WIFI", YELLOW);
+    tft_write(20, 86, 2, devs.dev_ssid, YELLOW);
   }
   tft_update();
   delay(10);
@@ -630,6 +634,8 @@ void setup(void)
         LOWER_CASE(devs.dev_name); // always lowercase the serial number
         strcpy(devs.dev_password, custom_password.getValue());
         devs.dev_mode = atoi(custom_mode.getValue());
+        strncpy(devs.dev_ssid, WiFi.SSID().c_str(), sizeof(devs.dev_ssid));
+        devs.dev_ssid[sizeof(devs.dev_ssid) - 1] = '\0'; // 确保字符串以 null 结尾
         EEPROM.begin(512);
         EEPROM.put(0, devs);
         if (EEPROM.commit())
@@ -682,10 +688,13 @@ void setup(void)
   }
 
   // seeking airtub partner
+  String devname = devs.dev_name;
+  devname.toUpperCase();
   tft_clear(BLACK);
   tft_write(20, 26, 2, "SEEKING", YELLOW);
   tft_write(20, 46, 2, "AIRTUB PARNER", YELLOW);
-  tft_write(20, 66, 2, "PLEASE WAIT", YELLOW);
+  tft_write(20, 66, 2, devname.c_str(), YELLOW);
+  tft_write(20, 86, 2, "PLEASE WAIT", YELLOW);
   tft_update();
   while (!get_airtub_device_ip())
   {
@@ -716,6 +725,33 @@ void loop()
   char buffer[10]; // Make sure this is large enough for your value
 
   const int rotary = handleEC11Event(); // Handle button and rotary events
+
+  if (rotary != 0)
+  {
+    modified = true;
+    modified_ts = millis();
+    active_ts = millis();
+  }
+
+  if (millis() - modified_ts > 10000 && modified)
+  {
+    modified = false;
+    target_temp = 0;
+  }
+
+  if (show_qrcode)
+  {
+    if (!qrcode_shown)
+    {
+      Serial.println("Should show QR code");
+      qrcode_shown = true;
+      const char *airtub_partner = "http://www.airfit.cn/products/banlu/banlu/170.html";
+      tft_gen_qrcode(airtub_partner);
+      tft_update();
+    }
+    active_ts = millis();
+    return;
+  }
 
   get_airtub_device_ip();
 
@@ -748,31 +784,15 @@ void loop()
     }
   }
 
-  if (rotary != 0)
+  // handling outdooor temp
+  if (json.containsKey("odt"))
   {
-    modified = true;
-    modified_ts = millis();
-    active_ts = millis();
-  }
-
-  if (millis() - modified_ts > 10000 && modified)
-  {
-    modified = false;
-    target_temp = 0;
-  }
-
-  if (show_qrcode)
-  {
-    if (!qrcode_shown)
-    {
-      Serial.println("Should show QR code");
-      qrcode_shown = true;
-      const char *airtub_partner = "http://www.airfit.cn/products/banlu/banlu/170.html";
-      tft_gen_qrcode(airtub_partner);
-      tft_update();
-    }
-    active_ts = millis();
-    return;
+    int value_odt = json["odt"].as<int>();
+    sprintf(buffer, "%02d", value_odt);
+    const char *value = buffer;
+    const int length = strlen(value);
+    tft_draw_bitmap(length > 2 ? 170 : 182, 5, outdoor, 16, 16);
+    tft_write(length > 2 ? 190 : 202, 5, 2, value, WHITE);
   }
 
   // handling error code
@@ -861,15 +881,7 @@ void loop()
 
   if (json.containsKey(ap_modulate))
   {
-    int value_modulate = json[ap_modulate].as<int>();
-    if (value_modulate > 60)
-    {
-      big_modulate = true;
-    }
-    else
-    {
-      big_modulate = false;
-    }
+    fire_modulate = json[ap_modulate].as<int>();
   }
 
   if (json.containsKey(ap_flame_state))
@@ -885,17 +897,22 @@ void loop()
 
         if (fire_fliped == false)
         {
-          tft_draw_bitmap(155, 12, big_modulate ? big_fire_rev : fire_rev, 48, 48);
+          tft_draw_bitmap(155, 20, fire_modulate > 60 ? fire_large_rev : fire_modulate > 40 ? fire_normal_rev
+                                                                                            : fire_small_rev,
+                          48, 40);
         }
         else
         {
-          tft_draw_bitmap(155, 12, big_modulate ? big_fire : fire, 48, 48);
+          tft_draw_bitmap(155, 20, fire_modulate > 60 ? fire_large : fire_modulate > 40 ? fire_normal
+                                                                                        : fire_small,
+                          48, 40);
         }
+        tft_draw_round_rect(160, 60, 38, 5, 5, LIGHT_GRAY);
       }
     }
     else
     {
-      tft_clear_rect(155, 12, 48, 48, BLACK);
+      tft_clear_rect(155, 20, 48, 40, BLACK);
       tft_draw_round_rect(160, 60, 38, 5, 5, LIGHT_GRAY);
     }
   }
@@ -903,14 +920,14 @@ void loop()
   // draw the switch
   if (json.containsKey(ap_target_mode))
   {
-    tft_draw_round_rect(209, 20, 16, 40, 5, target_mode ? LIGHT_GREEN : LIGHT_GRAY);
+    tft_draw_round_rect(209, 23, 16, 40, 5, target_mode ? LIGHT_GREEN : LIGHT_GRAY);
     if (target_mode)
     {
-      tft_draw_round_rect(209, 20, 16, 22, 5, DARK_GREEN);
+      tft_draw_round_rect(209, 23, 16, 22, 5, DARK_GREEN);
     }
     else
     {
-      tft_draw_round_rect(209, 38, 16, 22, 5, DARK_GRAY);
+      tft_draw_round_rect(209, 41, 16, 22, 5, DARK_GRAY);
     }
 #ifdef USE_CHINESE
     tft_draw_bitmap(0, 115, operate, 240, 12);

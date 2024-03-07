@@ -1,6 +1,6 @@
 ## 相关实验硬件，固件
 
-[![remote box for airtub partner](./stl/remotebox-thin.jpg 'Remote box for Airtub Partner')](http://airtub.com)
+[![remote box for airtub partner](./stl/remotebox-thin.jpg 'Remote box for Airtub Partner')](http://airfit.cn)
 
 ### 硬件
 
@@ -12,7 +12,7 @@ HiiBot 的 IoTs2 开发板一个，EC11编码器一个，68K电阻一个，47K�
 
 ### 元器件连接方式
 
-[![connect diagram](./stl/IoTs2V2_diagram.png 'IoTs2 V2 Connect diagram')](http://airtub.com)
+[![connect diagram](./stl/IoTs2V2_diagram.png 'IoTs2 V2 Connect diagram')](http://airfit.cn)
 
 EC11编码器的G连接开发板的G，+连接开发板的3V，CLK连接开发板42脚，DT连接开发板41脚，SW连接开发板18脚，5V与39(IoTs2 V2)脚之间连接47K二极管，地与39脚之间连接68K二极管。
 
