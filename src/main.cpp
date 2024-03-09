@@ -24,6 +24,7 @@
 #include "../images/shower.h"
 #include "../images/radiator.h"
 #include "../images/room.h"
+#include "../images/room_ext.h"
 #include "../images/outdoor.h"
 #ifdef USE_CHINESE
 #include "../images/operate.h"
@@ -70,6 +71,8 @@ bool configured = false;
 
 #define UDP_PORT 4211
 
+WiFiManager wm;
+const char *my_password = "4008206306";
 AsyncUDP udp;
 IPAddress addr = IPAddress(0, 0, 0, 0);
 IPAddress UDP_BCAST_GRP = IPAddress(224, 0, 1, 3);
@@ -501,10 +504,22 @@ void udp_callback(AsyncUDPPacket &packet)
   // }
 }
 
+String getParam(String name)
+{
+  // read parameter from server, for customhmtl input
+  String value;
+  if (wm.server->hasArg(name))
+  {
+    value = wm.server->arg(name);
+  }
+  return value;
+}
+
 // callback for WiFiManager to save parameters
 void saveParamCallback()
 {
   shouldSaveConfig = true;
+  devs.dev_mode = getParam("heatmodeid").toInt();
 }
 
 void deep_sleep_now()
@@ -597,7 +612,6 @@ void setup(void)
 
   if (!configured)
   {
-    WiFiManager wm;
     wm.erase(true); // erase all saved settings
     std::vector<const char *> menu = {"wifi"};
     wm.setDebugOutput(true);
@@ -608,16 +622,22 @@ void setup(void)
     wm.setMenu(menu);
     wm.setConnectTimeout(180);
     wm.setMinimumSignalQuality(20);
-    WiFiManagerParameter custom_device("dev", "device serial num:", "", 14, "autocapitalize='none' maxlength=12 required pattern='[a-zA-Z0-9]*' placeholder=\"boiler serial num\"");
-    WiFiManagerParameter custom_password("pass", "device password:", "", 14, "maxlength=12 required type=\"password\" placeholder=\"boiler password\"");
-    WiFiManagerParameter custom_mode("mode", "heating mode", "", 2, "required type=\"number\" min=\"0\" max=\"1\" placeholder=\"0-manual 1-auto\"");
+    wm.setAPStaticIPConfig(IPAddress(10, 0, 1, 1), IPAddress(10, 0, 1, 1), IPAddress(255, 255, 255, 0));
+
+    WiFiManagerParameter custom_device("dev", "设备序列号:", "", 14, "autocapitalize='none' maxlength=12 required pattern='[a-zA-Z0-9]*' placeholder=\"壁挂炉序列号\"");
+    WiFiManagerParameter custom_password("pass", "设备密码:", "", 14, "maxlength=12 required type=\"password\" placeholder=\"设备密码\"");
+    // WiFiManagerParameter custom_mode("mode", "heating mode", "", 2, "required type=\"number\" min=\"0\" max=\"1\" placeholder=\"0-manual 1-auto\"");
+    WiFiManagerParameter custom_field;
+    const char *custom_radio_str = "<br/><label for='heatmodeid'>采暖模式</label><br/><input type='radio' name='heatmodeid' value='0'> 手动模式<br/><input type='radio' name='heatmodeid' value='1' checked> 自动模式<br/>";
+    new (&custom_field) WiFiManagerParameter(custom_radio_str);
 
     wm.addParameter(&custom_device);
     wm.addParameter(&custom_password);
-    wm.addParameter(&custom_mode);
+    // wm.addParameter(&custom_mode);
+    wm.addParameter(&custom_field);
     wm.setSaveParamsCallback(saveParamCallback);
 
-    bool result = wm.autoConnect(my_name);
+    bool result = wm.autoConnect(my_name, my_password);
     if (!result)
     {
       Serial.println("Failed to setup WiFi");
@@ -633,7 +653,7 @@ void setup(void)
         strcpy(devs.dev_name, custom_device.getValue());
         LOWER_CASE(devs.dev_name); // always lowercase the serial number
         strcpy(devs.dev_password, custom_password.getValue());
-        devs.dev_mode = atoi(custom_mode.getValue());
+        // devs.dev_mode = atoi(custom_mode.getValue());
         strncpy(devs.dev_ssid, WiFi.SSID().c_str(), sizeof(devs.dev_ssid));
         devs.dev_ssid[sizeof(devs.dev_ssid) - 1] = '\0'; // 确保字符串以 null 结尾
         EEPROM.begin(512);
@@ -708,6 +728,7 @@ void setup(void)
 void loop()
 {
   static bool fire_fliped = false;
+  static unsigned long wifi_rssi_last_ts = 0;
 
 #ifdef POWER_DETECT
   power = digitalRead(POWER_CABLE_PIN);
@@ -755,17 +776,25 @@ void loop()
 
   get_airtub_device_ip();
 
-  if (wifi_get_rssi() > 70)
+#ifndef WIFI_SIGNAL_UPDATE_TIME
+#define WIFI_SIGNAL_UPDATE_TIME 10000
+#endif
+  if (millis() - wifi_rssi_last_ts > WIFI_SIGNAL_UPDATE_TIME)
   {
-    tft_draw_bitmap(45, 5, wifi_good, 16, 16);
-  }
-  else if (wifi_get_rssi() > 30)
-  {
-    tft_draw_bitmap(45, 5, wifi_normal, 16, 16);
-  }
-  else
-  {
-    tft_draw_bitmap(45, 5, wifi_bad, 16, 16);
+    const int wifi_rssi = wifi_get_rssi();
+    if (wifi_rssi > 70)
+    {
+      tft_draw_bitmap(45, 5, wifi_good, 16, 16);
+    }
+    else if (wifi_rssi > 30)
+    {
+      tft_draw_bitmap(45, 5, wifi_normal, 16, 16);
+    }
+    else
+    {
+      tft_draw_bitmap(45, 5, wifi_bad, 16, 16);
+    }
+    wifi_rssi_last_ts = millis();
   }
 
   if (target_index == 1)
@@ -776,7 +805,14 @@ void loop()
   {
     if (CH_MODE)
     {
-      tft_draw_bitmap(70, 5, room, 16, 16);
+      if (json.containsKey("pwr"))
+      {
+        tft_draw_bitmap(70, 5, room_ext, 16, 16);
+      }
+      else
+      {
+        tft_draw_bitmap(70, 5, room, 16, 16);
+      }
     }
     else
     {
@@ -832,7 +868,14 @@ void loop()
     }
     sprintf(buffer, "%02d", value_temp);
     const char *value = buffer;
-    tft_write(15, 26, 12, value, YELLOW);
+    if (json.containsKey("ovr") && json["ovr"].as<int>() == 1)
+    {
+      tft_write(15, 26, 12, value, RED);
+    }
+    else
+    {
+      tft_write(15, 26, 12, value, YELLOW);
+    }
   }
 
   // handling target temp
