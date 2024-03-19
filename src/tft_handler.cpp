@@ -2,8 +2,6 @@
 #include "qrcode.h"
 #include <SPI.h>
 
-float p = 3.1415926;
-
 Adafruit_ST7789 *_tft = NULL;
 QRCode qrcode;
 GFXcanvas16 canvas(240, 135);
@@ -21,7 +19,7 @@ void tft_init()
     _tft->init(135, 240);
     _tft->setSPISpeed(SPI_SPEED);
     uint16_t time = millis();
-    _tft->fillScreen(ST77XX_BLACK);
+    _tft->fillScreen(BLACK);
 #ifdef TFT_SPEED_TEST
     // time = millis() - time;
     // Serial.print("fillScreen spend:");
@@ -54,20 +52,20 @@ void tft_write_transperant(uint8_t x, uint8_t y, uint8_t size, const char *text,
 void tft_write(uint8_t x, uint8_t y, uint8_t size, const char *text, uint16_t color)
 {
     canvas.setCursor(x, y);
-    canvas.setTextColor(color, ST77XX_BLACK);
+    canvas.setTextColor(color, BLACK);
     canvas.setTextSize(size);
     canvas.print(text);
 }
 
-void tft_gen_qrcode(const char *text)
+void tft_gen_qrcode(const char *text, const uint16_t color, const uint16_t background)
 {
     uint8_t qrcodeData[qrcode_getBufferSize(3)];
     qrcode_initText(&qrcode, qrcodeData, 3, 0, text);
-    canvas.fillScreen(ST77XX_WHITE);
+    canvas.fillScreen(background);
 
     uint8_t scale = 4;
     uint16_t offsetX = (_tft->width() - qrcode.size * scale) / 2;
-    uint16_t offsetY = (_tft->height() - qrcode.size * scale) / 2;
+    uint16_t offsetY = (_tft->height() - qrcode.size * scale) / 2 - 4;
 
     for (uint8_t y = 0; y < qrcode.size; y++)
     {
@@ -76,7 +74,7 @@ void tft_gen_qrcode(const char *text)
             if (qrcode_getModule(&qrcode, x, y))
             {
                 // Add the offset to the x and y coordinates
-                canvas.fillRect(x * scale + offsetX, y * scale + offsetY, scale, scale, ST77XX_BLACK);
+                canvas.fillRect(x * scale + offsetX, y * scale + offsetY, scale, scale, color);
             }
         }
     }
@@ -113,3 +111,8 @@ void tft_update()
 {
     _tft->drawRGBBitmap(0, 0, canvas.getBuffer(), _tft->width(), _tft->height());
 }
+
+// void tft_set_font(const GFXfont *font)
+// {
+//     canvas.setFont(font);
+// }

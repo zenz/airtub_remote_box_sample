@@ -18,29 +18,14 @@ EC11编码器的G连接开发板的G，+连接开发板的3V，CLK连接开发�
 
 ** 请注意V1板没有引出39脚，可以采用40脚，并修改对应代码。
 
-### 测试
-
-编辑main.cpp文件，修改其中的对应的值以满足要求
-```C
-char *wifi_ssid = "YOUR WIFI SSID";            // Your WiFi SSID
-char *wifi_password = "YOUR WIFI PASSWORD";    // Your WiFi password
-char *dev_name = "YOUR BOILER SERIAL NUMBER";  // Your registered device serial number
-char *dev_password = "YOUR REGISTER PASSWORD"; // Your registered device password
-```
-
-另外需要确认采暖控制形式
-```
-#define CH_MODE 1 // 0-manual, 1-auto-temp control
-```
-其中0为手动采暖水温控制，1为自动室温控制。如果采用自动室温控制，应当确认雅图伴侣装到室内适合测温的位置。或者已经采用无线温度传感器与雅图伴侣配对。
-
 ### 使用方法
 
-- 首次使用或者更换了WiFi或者更换控制设备时，按住旋钮按上电，出现配置提示后用手机寻找AIRCUBE-XXXXXXXX的热点连接并进行配置。
+- 首次使用或者更换了WiFi或者更换控制设备时，按下RESET键黑屏后按BOOT键，出现配置提示后用手机寻找AIRCUBE-XXXXXXXX的热点连接并进行配置（出现二维码后用照相机功能扫描并点击识别出的WiFi设置页面）。
 - 使用旋钮进行温度调节，逆时针旋转减小温度值，顺时旋转针增大温度值。
 - 单击确认新的温度值设定。
 - 双击开关当前的模式开关
 - 三击切换管理的模式（生活热水和采暖模式循环切换）。
+- 四击显示雅图伴侣介绍网页，用微信扫描可直接跳转小程序介绍页面。
 
 ## 雅图伴侣本地UDP通讯格式
 

@@ -26,8 +26,34 @@
 #include "../images/room.h"
 #include "../images/room_ext.h"
 #include "../images/outdoor.h"
+#include "../images/seeking.h"
 #ifdef USE_CHINESE
-#include "../images/operate.h"
+#include "../images/configure.h"
+#include "../images/operate0.h"
+#include "../images/operate1.h"
+#include "../images/ap_seeking.h"
+#include "../images/connecting.h"
+#include "../images/erasing.h"
+#endif
+
+#ifdef DEBUG_ENABLED
+#define DebugBegin(...) ({ Serial.begin(__VA_ARGS__); })
+#define DebugPrint(...) ({ Serial.print(__VA_ARGS__); })
+#define DebugPrintln(...) ({ Serial.println(__VA_ARGS__); })
+#define DebugPrintf(...) ({ Serial.printf(__VA_ARGS__); })
+#define DebugWrite(...) ({ Serial.write(__VA_ARGS__); })
+#else
+#define DebugBegin(...)
+#define DebugPrint(...)
+#define DebugPrintln(...)
+#define DebugPrintf(...)
+#define DebugWrite(...)
+#endif // DEBUG_ENABLED
+
+#ifdef BOARD_V1
+#define PIN_RECONFIG 21
+#else
+#define PIN_RECONFIG 0
 #endif
 
 #ifdef USE_DEEP_SLEEP
@@ -41,7 +67,8 @@ RTC_DATA_ATTR int dev_active = 0;
 int dev_active = 0;
 #endif
 
-#define SEND_TIMEOUT 6000 // 6 seconds
+#define SEND_TIMEOUT 6000    // 6 seconds
+#define MODIFY_TIMEOUT 10000 // 10 seconds
 
 #ifdef BOARD_V1
 #define POWER_CABLE_PIN 40
@@ -96,6 +123,14 @@ struct devices
 } devs;
 
 uint8_t CH_MODE = 1;
+
+const char over_temp[] = "ovr";
+const char ext_temp_pwr[] = "pwr";
+const char out_door_temp[] = "odt";
+const char target_device[] = "tar";
+const char sender_device[] = "dev";
+const char reset_command[] = "clr";
+const char update_state[] = "sta";
 
 const char ap_flame_state[] = "fst";
 const char ap_fault_state[] = "flt";
@@ -166,56 +201,53 @@ int wifi_get_rssi()
   }
 }
 
+void switch_mode(uint8_t mode)
+{
+  if (mode)
+  {
+    ap_current_mode = (char *)atm_current_mode;
+    ap_target_mode = (char *)atm_target_mode;
+    ap_current_temp = (char *)atm_current_temp;
+    ap_target_temp = (char *)atm_target_temp;
+    target_mode = 1; // in auto mode, target mode is always on
+    MIN_TEMP = atm_min_temp;
+    MAX_TEMP = atm_max_temp;
+  }
+  else
+  {
+    ap_current_mode = (char *)ch_current_mode;
+    ap_target_mode = (char *)ch_target_mode;
+    ap_current_temp = (char *)ch_current_temp;
+    ap_target_temp = (char *)ch_target_temp;
+    MIN_TEMP = ch_min_temp;
+    MAX_TEMP = ch_max_temp;
+  }
+}
+
 void change_control_target()
 {
-  switch (target_index)
-  {
-  case 0:
-    ap_current_mode = (char *)dhw_current_mode;
-    ap_target_mode = (char *)dhw_target_mode;
-    ap_current_temp = (char *)dhw_current_temp;
-    ap_target_temp = (char *)dhw_target_temp;
-    MIN_TEMP = dhw_min_temp;
-    MAX_TEMP = dhw_max_temp;
-    break;
-
-  case 1:
-    if (CH_MODE)
-    {
-      ap_current_mode = (char *)atm_current_mode;
-      ap_target_mode = (char *)atm_target_mode;
-      ap_current_temp = (char *)atm_current_temp;
-      ap_target_temp = (char *)atm_target_temp;
-      MIN_TEMP = atm_min_temp;
-      MAX_TEMP = atm_max_temp;
-    }
-    else
-    {
-      ap_current_mode = (char *)ch_current_mode;
-      ap_target_mode = (char *)ch_target_mode;
-      ap_current_temp = (char *)ch_current_temp;
-      ap_target_temp = (char *)ch_target_temp;
-      MIN_TEMP = ch_min_temp;
-      MAX_TEMP = ch_max_temp;
-    }
-
-    break;
-
-  default:
-    break;
-  }
-
   // save running state
   if (dev_active != target_index)
   {
     dev_active = target_index;
   }
 
-  target_index++;
-  if (target_index > 1)
+  // Update global variables based on the new target_index
+  if (target_index == 0)
   {
-    target_index = 0;
+    ap_current_mode = (char *)dhw_current_mode;
+    ap_target_mode = (char *)dhw_target_mode;
+    ap_current_temp = (char *)dhw_current_temp;
+    ap_target_temp = (char *)dhw_target_temp;
+    MIN_TEMP = dhw_min_temp;
+    MAX_TEMP = dhw_max_temp;
   }
+  else
+  {
+    switch_mode(CH_MODE);
+  }
+
+  target_index = (target_index + 1) % 2; // 确保target_index在0和1之间循环
 
   target_temp = 0;
   target_mode = 0;
@@ -235,53 +267,23 @@ inline void xor_crypt(uint8_t *buffer, int buf_len, const uint8_t *key, int key_
   }
 }
 
-/* We need to search the Airtub Partner and get it's IP to send data */
-bool get_airtub_device_ip()
-{
-  if (addr != IPAddress(0, 0, 0, 0))
-  {
-    return true;
-  }
-
-  int n = MDNS.queryService("airtub", "udp");
-  if (n == 0)
-  {
-    Serial.println("No device found!");
-    return false;
-  }
-
-  bool found = false;
-  for (int i = 0; i < n; ++i)
-  {
-    if (MDNS.hostname(i) == String(devs.dev_name))
-    {
-      Serial.printf("Find device %s with IP %s\n", MDNS.hostname(i).c_str(), MDNS.IP(i).toString().c_str());
-      addr = MDNS.IP(i);
-      found = true;
-      break;
-    }
-  }
-
-  return found;
-}
-
 void send_udp_msg(udp_msg_format_t msg)
 {
   static unsigned long last_sent_ts = millis();
   msg_sent = false;
 
   /* Do some Airtub Partner communicate treatments first.*/
-  Serial.printf("Message Processing: %s\n", msg.data);
+  DebugPrintf("Message Processing: %s\n", msg.data);
   xor_crypt((uint8_t *)msg.data, msg.len, (uint8_t *)devs.dev_password, strlen(devs.dev_password)); // 加密
   msg.crc = crc32Buffer(msg.data, msg.len);
 
   if (addr == IPAddress(0, 0, 0, 0))
   {
-    Serial.println("No device found! Do not send anything.");
+    DebugPrintln("No device found! Do not send anything.");
     return;
   }
 
-  Serial.println("Sending UDP message");
+  DebugPrintln("Sending UDP message");
   unsigned long start_ts = millis();
   do
   {
@@ -293,7 +295,7 @@ void send_udp_msg(udp_msg_format_t msg)
     // 超时退出循环
     if (millis() - start_ts > SEND_TIMEOUT)
     {
-      Serial.println("Send message timeout!");
+      DebugPrintln("Send message timeout!");
       break;
     }
   } while (!msg_sent);
@@ -305,9 +307,10 @@ void change_value()
   char buffer[180];
   udp_msg_format_t msg_send;
   JsonDocument json;
-  json["tar"] = devs.dev_name;
-  json["dev"] = my_name;
+  json[target_device] = devs.dev_name;
+  json[sender_device] = my_name;
   json[ap_target_temp] = target_temp;
+  json[update_state] = 1;
   msg_send.type = 3; // AIRCUBE
   msg_send.len = serializeJson(json, buffer, 180);
   strcpy(msg_send.data, buffer);
@@ -316,15 +319,49 @@ void change_value()
 }
 
 // change target mode
-void change_mode(int mode)
+void change_mode(uint8_t mode)
+{
+  bool not_auto_mode = false;
+  char buffer[180];
+  JsonDocument json;
+
+  json[target_device] = devs.dev_name;
+  json[sender_device] = my_name;
+  json[update_state] = 1;
+  if (strcmp(ap_target_mode, atm_target_mode) != 0)
+  {
+    not_auto_mode = true;
+    json[ap_target_mode] = mode;
+  }
+  if (not_auto_mode)
+  {
+    udp_msg_format_t msg_send;
+    msg_send.type = 3; // AIRCUBE
+    msg_send.len = serializeJson(json, buffer, 180);
+    strcpy(msg_send.data, buffer);
+
+    send_udp_msg(msg_send);
+  }
+}
+
+void switch_heating_mode(uint8_t mode)
 {
   char buffer[180];
   udp_msg_format_t msg_send;
   JsonDocument json;
-  json["tar"] = devs.dev_name;
-  json["dev"] = my_name;
-  json["atm"] = CH_MODE;
-  json[ap_target_mode] = mode;
+
+  json[target_device] = devs.dev_name;
+  json[sender_device] = my_name;
+  if (mode)
+  {
+    json[atm_target_mode] = 1;
+  }
+  else
+  {
+    json[atm_target_mode] = 0;
+    json[ch_target_temp] = 35;
+  }
+  json[update_state] = 1;
   msg_send.type = 3; // AIRCUBE
   msg_send.len = serializeJson(json, buffer, 180);
   strcpy(msg_send.data, buffer);
@@ -338,9 +375,9 @@ void reset_error()
   char buffer[180];
   udp_msg_format_t msg_send;
   JsonDocument json;
-  json["tar"] = devs.dev_name;
-  json["dev"] = my_name;
-  json["clr"] = 1;
+  json[target_device] = devs.dev_name;
+  json[sender_device] = my_name;
+  json[reset_command] = 1;
   msg_send.type = 3; // AIRCUBE
   msg_send.len = serializeJson(json, buffer, 180);
   strcpy(msg_send.data, buffer);
@@ -359,6 +396,21 @@ bool removeSubstring(char *str, const char *toRemove)
     return true;
   }
   return false;
+}
+
+void save_config()
+{
+  EEPROM.begin(512);
+  EEPROM.put(0, devs);
+  if (EEPROM.commit())
+  {
+    DebugPrintln("Settings saved");
+  }
+  else
+  {
+    DebugPrintln("EEPROM error");
+  }
+  EEPROM.end();
 }
 
 void reset_esp()
@@ -403,16 +455,31 @@ int handleEC11Event()
   case -3:
   case -4:
   case -5:
-    if (!show_qrcode)
+    if (!show_qrcode && target_index == 0)
     {
-      Serial.println("Long pressed, reset error.");
-      reset_error();
+      DebugPrintln("Long pressed, change heating manage mode.");
+      CH_MODE = !CH_MODE;
+      switch_mode(CH_MODE);
+      switch_heating_mode(CH_MODE);
+      devs.dev_mode = CH_MODE;
+      save_config();
     }
     break;
   case 1:
-    if (!show_qrcode)
+    if (show_qrcode)
     {
-      Serial.println("Single clicked, change value.");
+      show_qrcode = false;
+      qrcode_shown = false;
+      tft_clear(BLACK);
+    }
+    else if (was_fault)
+    {
+      DebugPrintln("Was fault and single clicked, reset error.");
+      reset_error();
+    }
+    else
+    {
+      DebugPrintln("Single clicked, change value.");
       modified = false;
       change_value();
     }
@@ -420,7 +487,7 @@ int handleEC11Event()
   case 2:
     if (!show_qrcode)
     {
-      Serial.println("Double clicked, change mode");
+      DebugPrintln("Double clicked, change mode");
       target_mode = !target_mode;
       change_mode(target_mode);
     }
@@ -428,18 +495,13 @@ int handleEC11Event()
   case 3:
     if (!show_qrcode)
     {
-      Serial.println("Triple clicked, change control target");
+      DebugPrintln("Triple clicked, change control target");
       change_control_target();
     }
     break;
   case 4:
-    Serial.println("Triple clicked, switch to show or hide QR code");
-    show_qrcode = !show_qrcode;
-    if (!show_qrcode)
-    {
-      qrcode_shown = false;
-      tft_clear(BLACK);
-    }
+    DebugPrintln("Triple clicked, switch to show or hide QR code");
+    show_qrcode = true;
     break;
   default:
     break;
@@ -463,8 +525,8 @@ void update_msg_data(const char *json_msg)
   DeserializationError error = deserializeJson(json, json_msg);
   if (error)
   {
-    Serial.print(F("deserializeJson() failed: "));
-    Serial.println(error.c_str());
+    DebugPrint(F("deserializeJson() failed: "));
+    DebugPrintln(error.c_str());
   }
 }
 
@@ -472,13 +534,13 @@ void udp_callback(AsyncUDPPacket &packet)
 {
   if (packet.length() > sizeof(msg))
   { // Incorrect packet length
-    Serial.println("Invalid packet length");
+    DebugPrintln("Invalid packet length");
     return;
   }
   memcpy(&msg, packet.data(), packet.length());
   if (msg.crc == 0 || msg.type <= 0 || msg.type > 5 || crc32Buffer(msg.data, msg.len) != msg.crc)
   { // Incorrect device type or CRC error.
-    Serial.println("Invalid packet");
+    DebugPrintln("Invalid packet");
     return;
   }
   xor_crypt(reinterpret_cast<uint8_t *>(msg.data), msg.len, reinterpret_cast<const uint8_t *>(devs.dev_password), strlen(devs.dev_password)); // decode message
@@ -490,17 +552,23 @@ void udp_callback(AsyncUDPPacket &packet)
   {
     padWithSpaces(msg.data, 180);
     update_msg_data(msg.data);
-    Serial.printf("MCAST JSON: %s - %lu\n", json.as<String>().c_str(), time_stamp);
+    DebugPrintf("MCAST JSON: %s - %lu\n", json.as<String>().c_str(), time_stamp);
     last_mcast_ts = millis();
+    if (addr == IPAddress(0, 0, 0, 0))
+    {
+      // 从广播信息中也可以获取Airtub Partner的IP
+      addr = packet.remoteIP();
+      DebugPrintf("Find airtub partner from udp_callback: %s\n", addr.toString().c_str());
+    }
   }
   else if (strstr(msg.data, target_reply) != nullptr)
   {
-    Serial.printf("P2P JSON: %s - %lu\n", msg.data, time_stamp);
+    DebugPrintf("P2P JSON: %s - %lu\n", msg.data, time_stamp);
     msg_sent = true;
   }
   // else
   // {
-  //   Serial.printf("Data not for me:%s\n", msg.data);
+  //   DebugPrintf("Data not for me:%s\n", msg.data);
   // }
 }
 
@@ -513,6 +581,14 @@ String getParam(String name)
     value = wm.server->arg(name);
   }
   return value;
+}
+
+void showWiFiQRCode(WiFiManager *wm)
+{
+  char wifi_code[50];
+  sprintf(wifi_code, "WIFI:T:WPA;S:%s;P:%s;;", my_name, my_password);
+  tft_gen_qrcode(wifi_code, DARK_GREEN, BLACK);
+  tft_update();
 }
 
 // callback for WiFiManager to save parameters
@@ -532,7 +608,9 @@ void deep_sleep_now()
 
 void setup(void)
 {
-  Serial.begin(115200);
+  DebugBegin(115200);
+
+  pinMode(PIN_RECONFIG, INPUT_PULLUP); // for device reconfiguration
 
   pinMode(PIN_BTN, INPUT_PULLUP); // Must PULLUP first to make button click work correctly
   ec11_init();                    // Initialize button & rotary encoder
@@ -549,7 +627,7 @@ void setup(void)
   // check if devs is valid
   if (strlen(devs.dev_name) == 0 || strlen(devs.dev_password) == 0)
   {
-    Serial.println("Device not configured!");
+    DebugPrintln("Device not configured!");
     configured = false;
   }
   else
@@ -557,26 +635,31 @@ void setup(void)
     configured = true;
     CH_MODE = devs.dev_mode;
     target_index = dev_active ? 1 : 0;
-    Serial.printf("Device: %s, Password: %s, Mode: %d， Active: %d\n", devs.dev_name, devs.dev_password, devs.dev_mode, dev_active);
+    DebugPrintf("Device: %s, Password: %s, Mode: %d， Active: %d\n", devs.dev_name, devs.dev_password, devs.dev_mode, dev_active);
   }
 
   uint64_t chipid = ESP.getEfuseMac(); // The chip ID is essentially its MAC address(length: 6 bytes).
   sprintf(my_name, "AIRCUBE-%08X", (uint32_t)chipid);
 
   tft_init(true);
-  Serial.println("Display ready.");
+  DebugPrintln("Display ready.");
 
   if (power == HIGH)
   {
-    Serial.println("CABLE_PLUGINED!");
+    DebugPrintln("CABLE_PLUGINED!");
   }
 
-  int critical = digitalRead(PIN_BTN);
+  int critical = digitalRead(PIN_RECONFIG);
   if (critical == LOW)
   {
-    Serial.println("Reset Remote Box!");
+    DebugPrintln("Reset Remote Box!");
+    wm.erase(true); // erase all saved settings
     tft_clear(BLACK);
+#ifdef USE_CHINESE
+    tft_draw_bitmap(20, 26, erasing, 116, 24);
+#else
     tft_write(20, 26, 2, "ERASING...", YELLOW);
+#endif
     tft_update();
     delay(500);
     reset_esp();
@@ -584,26 +667,27 @@ void setup(void)
 
   if (!configured)
   {
-    Serial.println("Not configured");
+    DebugPrintln("Not configured");
     tft_clear(BLACK);
+#ifdef USE_CHINESE
+    tft_draw_bitmap(20, 26, configure, 123, 72);
+#else
     tft_write(20, 26, 2, "NEW DEVICE", YELLOW);
     tft_write(20, 46, 2, "WAITING FOR", YELLOW);
     tft_write(20, 66, 2, "CONFIGURATION", YELLOW);
+#endif
   }
   else
   {
     tft_clear(BLACK);
+#ifdef USE_CHINESE
+    tft_draw_bitmap(20, 26, connecting, 169, 48);
+    tft_write(22, 78, 2, devs.dev_ssid, YELLOW);
+#else
     tft_write(20, 26, 2, "PREPAIRING...", YELLOW);
-    if (power == HIGH)
-    {
-      tft_write(20, 46, 2, "POWER: USB", YELLOW);
-    }
-    else
-    {
-      tft_write(20, 46, 2, "POWER: BATTERY", YELLOW);
-    }
-    tft_write(20, 66, 2, "CONNECT WIFI", YELLOW);
-    tft_write(20, 86, 2, devs.dev_ssid, YELLOW);
+    tft_write(20, 46, 2, "CONNECT WIFI", YELLOW);
+    tft_write(20, 66, 2, devs.dev_ssid, YELLOW);
+#endif
   }
   tft_update();
   delay(10);
@@ -612,7 +696,6 @@ void setup(void)
 
   if (!configured)
   {
-    wm.erase(true); // erase all saved settings
     std::vector<const char *> menu = {"wifi"};
     wm.setDebugOutput(true);
     wm.setCountry("CN");
@@ -636,11 +719,12 @@ void setup(void)
     // wm.addParameter(&custom_mode);
     wm.addParameter(&custom_field);
     wm.setSaveParamsCallback(saveParamCallback);
+    wm.setAPCallback(showWiFiQRCode);
 
     bool result = wm.autoConnect(my_name, my_password);
     if (!result)
     {
-      Serial.println("Failed to setup WiFi");
+      DebugPrintln("Failed to setup WiFi");
 #ifdef USE_DEEP_SLEEP
       deep_sleep_now();
 #endif
@@ -649,24 +733,14 @@ void setup(void)
     {
       if (shouldSaveConfig)
       {
-        Serial.println("Should save parameters");
+        DebugPrintln("Should save parameters");
         strcpy(devs.dev_name, custom_device.getValue());
         LOWER_CASE(devs.dev_name); // always lowercase the serial number
         strcpy(devs.dev_password, custom_password.getValue());
         // devs.dev_mode = atoi(custom_mode.getValue());
         strncpy(devs.dev_ssid, WiFi.SSID().c_str(), sizeof(devs.dev_ssid));
         devs.dev_ssid[sizeof(devs.dev_ssid) - 1] = '\0'; // 确保字符串以 null 结尾
-        EEPROM.begin(512);
-        EEPROM.put(0, devs);
-        if (EEPROM.commit())
-        {
-          Serial.println("Settings saved");
-        }
-        else
-        {
-          Serial.println("EEPROM error");
-        }
-        EEPROM.end();
+        save_config();
         ESP.restart();
       }
     }
@@ -682,53 +756,48 @@ void setup(void)
     while (WiFi.status() != WL_CONNECTED)
     {
       delay(500);
-      Serial.print(".");
+      DebugPrint(".");
       if (millis() - active_ts > DEEPSLEEP_TIME)
       {
         deep_sleep_now(); // 超过设定时间未连上WiFi，进入休眠。
       }
     }
-    Serial.println("");
+    DebugPrintln("");
   }
 
   if (mdns_init() != ESP_OK)
   {
-    Serial.println("mDNS failed to start");
+    DebugPrintln("mDNS failed to start");
   }
 
   sprintf(target_reply, "{\"rec\":1,\"dev\":\"%s\"}", devs.dev_name);
   if (udp.listenMulticast(UDP_BCAST_GRP, UDP_PORT))
   {
-    Serial.println("UDP Listening");
+    DebugPrintln("UDP Listening");
     udp.onPacket(udp_callback);
   }
   else
   {
-    Serial.println("UDP Listen failed");
+    DebugPrintln("UDP Listen failed");
   }
 
-  // seeking airtub partner
   String devname = devs.dev_name;
   devname.toUpperCase();
   tft_clear(BLACK);
-  tft_write(20, 26, 2, "SEEKING", YELLOW);
-  tft_write(20, 46, 2, "AIRTUB PARNER", YELLOW);
-  tft_write(20, 66, 2, devname.c_str(), YELLOW);
-  tft_write(20, 86, 2, "PLEASE WAIT", YELLOW);
-  tft_update();
-  while (!get_airtub_device_ip())
-  {
-    yield();
-  };
-  Serial.printf("Airtub Partner IP: %s\n", addr.toString());
   change_control_target();
   tft_clear(BLACK);
 }
 
 void loop()
 {
+  static bool airtub_seeking = true;
   static bool fire_fliped = false;
   static unsigned long wifi_rssi_last_ts = 0;
+  static uint8_t currentOperateHint = 0;
+
+  // #ifdef DEBUG_ENABLED
+  //   const unsigned long start_time = millis();
+  // #endif
 
 #ifdef POWER_DETECT
   power = digitalRead(POWER_CABLE_PIN);
@@ -754,7 +823,7 @@ void loop()
     active_ts = millis();
   }
 
-  if (millis() - modified_ts > 10000 && modified)
+  if (millis() - modified_ts > MODIFY_TIMEOUT && modified)
   {
     modified = false;
     target_temp = 0;
@@ -764,17 +833,19 @@ void loop()
   {
     if (!qrcode_shown)
     {
-      Serial.println("Should show QR code");
+      DebugPrintln("Should show QR code");
       qrcode_shown = true;
       const char *airtub_partner = "http://www.airfit.cn/products/banlu/banlu/170.html";
-      tft_gen_qrcode(airtub_partner);
+      tft_gen_qrcode(airtub_partner, DARK_GREEN, BLACK);
       tft_update();
     }
-    active_ts = millis();
+    if (millis() - active_ts > DEEPSLEEP_TIME && power == LOW)
+    {
+      deep_sleep_now();
+    }
+
     return;
   }
-
-  get_airtub_device_ip();
 
 #ifndef WIFI_SIGNAL_UPDATE_TIME
 #define WIFI_SIGNAL_UPDATE_TIME 10000
@@ -794,7 +865,40 @@ void loop()
     {
       tft_draw_bitmap(45, 5, wifi_bad, 16, 16);
     }
-    wifi_rssi_last_ts = millis();
+    // wifi_rssi_last_ts = millis(); // 更新放到操作提示后，重复利用
+  }
+
+  if (addr == IPAddress(0, 0, 0, 0))
+  {
+    tft_clear_rect(0, 21, 240, 92, BLACK);
+    tft_draw_bitmap(70, 5, seeking, 16, 16);
+#ifdef USE_CHINESE
+    tft_draw_bitmap(30, 55, ap_seeking, 140, 24);
+#else
+    tft_write(30, 55, 3, "Seeking...", YELLOW);
+#endif
+    tft_update();
+    return;
+  }
+  else if (airtub_seeking)
+  {
+    airtub_seeking = false;
+    tft_clear_rect(0, 21, 240, 92, BLACK);
+    tft_update();
+  }
+
+  if (json.containsKey(atm_target_mode))
+  {
+    const uint8_t target_auto_mode = json[atm_target_mode].as<int>();
+    if (target_auto_mode != CH_MODE)
+    {
+      CH_MODE = target_auto_mode;
+      switch_mode(CH_MODE);
+      if (CH_MODE)
+        target_temp = json[atm_target_temp].as<int>();
+      else
+        target_temp = json[ch_target_temp].as<int>();
+    }
   }
 
   if (target_index == 1)
@@ -805,7 +909,7 @@ void loop()
   {
     if (CH_MODE)
     {
-      if (json.containsKey("pwr"))
+      if (json.containsKey(ext_temp_pwr))
       {
         tft_draw_bitmap(70, 5, room_ext, 16, 16);
       }
@@ -821,9 +925,9 @@ void loop()
   }
 
   // handling outdooor temp
-  if (json.containsKey("odt"))
+  if (json.containsKey(out_door_temp))
   {
-    int value_odt = json["odt"].as<int>();
+    int value_odt = json[out_door_temp].as<int>();
     sprintf(buffer, "%02d", value_odt);
     const char *value = buffer;
     const int length = strlen(value);
@@ -855,20 +959,11 @@ void loop()
   int value_temp = 0;
   if (json.containsKey(ap_current_temp))
   {
-    if (target_index == 0)
-    {
-      // auto heating mode
-      float value_temp_float = json[ap_current_temp].as<float>();
-      value_temp = round(value_temp_float - 0.1);
-    }
-    else
-    {
-      // water or manual heating mode
-      value_temp = json[ap_current_temp].as<int>();
-    }
+    float value_temp_float = json[ap_current_temp].as<float>();
+    value_temp = round(value_temp_float - 0.1);
     sprintf(buffer, "%02d", value_temp);
     const char *value = buffer;
-    if (json.containsKey("ovr") && json["ovr"].as<int>() == 1)
+    if (json.containsKey(over_temp) && json[over_temp].as<bool>() == true)
     {
       tft_write(15, 26, 12, value, RED);
     }
@@ -904,14 +999,14 @@ void loop()
     {
       sprintf(buffer, "%02d", target_temp);
       const char *value = buffer;
-      // Serial.printf("Local Settings: %s\n", value);
+      // DebugPrintf("Local Settings: %s\n", value);
       tft_write(160, 70, 6, value, RED);
     }
     else
     {
       sprintf(buffer, "%02d", value_target_temp);
       const char *value = buffer;
-      // Serial.printf("tct: %s\n", value);
+      // DebugPrintf("tct: %s\n", value);
       tft_write(160, 70, 6, value, BLUE);
     }
   }
@@ -927,6 +1022,7 @@ void loop()
     fire_modulate = json[ap_modulate].as<int>();
   }
 
+  // draw the flame
   if (json.containsKey(ap_flame_state))
   {
     static unsigned long last_flip = millis();
@@ -940,13 +1036,13 @@ void loop()
 
         if (fire_fliped == false)
         {
-          tft_draw_bitmap(155, 20, fire_modulate > 60 ? fire_large_rev : fire_modulate > 40 ? fire_normal_rev
+          tft_draw_bitmap(155, 21, fire_modulate > 60 ? fire_large_rev : fire_modulate > 40 ? fire_normal_rev
                                                                                             : fire_small_rev,
                           48, 40);
         }
         else
         {
-          tft_draw_bitmap(155, 20, fire_modulate > 60 ? fire_large : fire_modulate > 40 ? fire_normal
+          tft_draw_bitmap(155, 21, fire_modulate > 60 ? fire_large : fire_modulate > 40 ? fire_normal
                                                                                         : fire_small,
                           48, 40);
         }
@@ -955,7 +1051,7 @@ void loop()
     }
     else
     {
-      tft_clear_rect(155, 20, 48, 40, BLACK);
+      tft_clear_rect(155, 21, 48, 40, BLACK);
       tft_draw_round_rect(160, 60, 38, 5, 5, LIGHT_GRAY);
     }
   }
@@ -972,22 +1068,49 @@ void loop()
     {
       tft_draw_round_rect(209, 41, 16, 22, 5, DARK_GRAY);
     }
+  }
+
+  // draw operate hint
+  if (millis() - wifi_rssi_last_ts > WIFI_SIGNAL_UPDATE_TIME)
+  {
+    currentOperateHint = (currentOperateHint + 1) % 2;
+
+    wifi_rssi_last_ts = millis();
+  }
+  if (currentOperateHint == 0)
+  {
 #ifdef USE_CHINESE
-    tft_draw_bitmap(0, 115, operate, 240, 12);
+    tft_draw_bitmap(0, 115, operate0, 240, 12);
 #else
-    tft_write(10, 120, 1, "SINGLE:SET,DOUBLE:ON/OFF,TRIPLE:FUNC", ORANGE);
+    tft_write(6, 118, 1, "SINGLE:SET,DOUBLE:ON/OFF,TRIPLE:SWITCH", ORANGE);
 #endif
   }
+  else
+  {
+#ifdef USE_CHINESE
+    tft_draw_bitmap(0, 115, operate1, 240, 12);
+#else
+    tft_write(6, 118, 1, " FORTH:SHOW QRCODE,3SECS:AUTO/MANUAL  ", ORANGE);
+#endif
+  }
+
+  // update all
   tft_update();
 
   if (millis() - last_mcast_ts > MCAST_TIMEOUT)
   {
-    Serial.printf("No multicast message received more than %d secs,", MCAST_TIMEOUT / 1000);
-    Serial.println("Reconnect WiFi and seeking Airtub Partner again.");
+    DebugPrintf("No multicast message received more than %d secs,", MCAST_TIMEOUT / 1000);
+    DebugPrintln("Reconnect WiFi and seeking Airtub Partner again.");
     WiFi.reconnect();
     addr = IPAddress(0, 0, 0, 0);
+    airtub_seeking = true;
     last_mcast_ts = millis();
   }
+
+  // #ifdef DEBUG_ENABLED
+  //   const unsigned long used_time = millis() - start_time;
+  //   DebugPrintf("Used time for handling: %lu\n", used_time);
+  // #endif
 
 #ifdef USE_DEEP_SLEEP
   if (millis() - active_ts > DEEPSLEEP_TIME && power == LOW)
