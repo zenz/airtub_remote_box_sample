@@ -10,30 +10,32 @@
 #include "ec11_handler.h"
 #include "udp_handler.h"
 
-#include "../images/fire_small.h"
-#include "../images/fire_small_rev.h"
-#include "../images/fire_normal.h"
-#include "../images/fire_normal_rev.h"
-#include "../images/fire_large.h"
-#include "../images/fire_large_rev.h"
-#include "../images/plug.h"
-#include "../images/battery.h"
-#include "../images/wifi_good.h"
-#include "../images/wifi_bad.h"
-#include "../images/wifi_normal.h"
-#include "../images/shower.h"
-#include "../images/radiator.h"
-#include "../images/room.h"
-#include "../images/room_ext.h"
-#include "../images/outdoor.h"
-#include "../images/seeking.h"
+#include "../assets/fire_small.h"
+#include "../assets/fire_small_rev.h"
+#include "../assets/fire_normal.h"
+#include "../assets/fire_normal_rev.h"
+#include "../assets/fire_large.h"
+#include "../assets/fire_large_rev.h"
+#include "../assets/plug.h"
+#include "../assets/battery.h"
+#include "../assets/wifi_good.h"
+#include "../assets/wifi_bad.h"
+#include "../assets/wifi_normal.h"
+#include "../assets/shower.h"
+#include "../assets/shower_burn.h"
+#include "../assets/radiator.h"
+#include "../assets/radiator_burn.h"
+#include "../assets/room.h"
+#include "../assets/room_ext.h"
+#include "../assets/outdoor.h"
+#include "../assets/seeking.h"
 #ifdef USE_CHINESE
-#include "../images/configure.h"
-#include "../images/operate0.h"
-#include "../images/operate1.h"
-#include "../images/ap_seeking.h"
-#include "../images/connecting.h"
-#include "../images/erasing.h"
+#include "../assets/configure.h"
+#include "../assets/operate0.h"
+#include "../assets/operate1.h"
+#include "../assets/ap_seeking.h"
+#include "../assets/connecting.h"
+#include "../assets/erasing.h"
 #endif
 
 #ifdef DEBUG_ENABLED
@@ -59,15 +61,15 @@
 #ifdef USE_DEEP_SLEEP
 #define WAKEUP_PIN GPIO_NUM_18
 #define WAKEUP_LEVEL LOW
-RTC_DATA_ATTR int dev_active = 0;
+RTC_DATA_ATTR uint8_t target_index = 0;
 #ifndef DEEPSLEEP_TIME
 #define DEEPSLEEP_TIME 30000 // 30 seconds
 #endif
 #else
-int dev_active = 0;
+uint8_t target_index = 0;
 #endif
 
-#define SEND_TIMEOUT 6000    // 6 seconds
+#define SEND_TIMEOUT 10000   // 10 seconds
 #define MODIFY_TIMEOUT 10000 // 10 seconds
 
 #ifdef BOARD_V1
@@ -172,7 +174,6 @@ char *ap_target_temp = nullptr;
 int MIN_TEMP = 0;
 int MAX_TEMP = 0;
 
-uint8_t target_index = 0;
 uint8_t last_dhw_target_mode = 0;
 uint8_t last_ch_target_mode = 0;
 
@@ -224,15 +225,8 @@ void switch_mode(uint8_t mode)
   }
 }
 
-void change_control_target()
+void change_control_target(const uint8_t target_index)
 {
-  // save running state
-  if (dev_active != target_index)
-  {
-    dev_active = target_index;
-  }
-
-  // Update global variables based on the new target_index
   if (target_index == 0)
   {
     ap_current_mode = (char *)dhw_current_mode;
@@ -246,8 +240,6 @@ void change_control_target()
   {
     switch_mode(CH_MODE);
   }
-
-  target_index = (target_index + 1) % 2; // 确保target_index在0和1之间循环
 
   target_temp = 0;
   target_mode = 0;
@@ -296,6 +288,7 @@ void send_udp_msg(udp_msg_format_t msg)
     if (millis() - start_ts > SEND_TIMEOUT)
     {
       DebugPrintln("Send message timeout!");
+      addr = IPAddress(0, 0, 0, 0);
       break;
     }
   } while (!msg_sent);
@@ -452,10 +445,12 @@ int handleEC11Event()
 
   switch (buttonState)
   {
+  case -2:
   case -3:
   case -4:
   case -5:
-    if (!show_qrcode && target_index == 0)
+  case -6:
+    if (!show_qrcode && target_index == 1)
     {
       DebugPrintln("Long pressed, change heating manage mode.");
       CH_MODE = !CH_MODE;
@@ -496,7 +491,8 @@ int handleEC11Event()
     if (!show_qrcode)
     {
       DebugPrintln("Triple clicked, change control target");
-      change_control_target();
+      target_index = (target_index + 1) % 2;
+      change_control_target(target_index);
     }
     break;
   case 4:
@@ -634,8 +630,7 @@ void setup(void)
   {
     configured = true;
     CH_MODE = devs.dev_mode;
-    target_index = dev_active ? 1 : 0;
-    DebugPrintf("Device: %s, Password: %s, Mode: %d， Active: %d\n", devs.dev_name, devs.dev_password, devs.dev_mode, dev_active);
+    DebugPrintf("Device: %s, Password: %s, Mode: %d， Active: %d\n", devs.dev_name, devs.dev_password, devs.dev_mode, target_index);
   }
 
   uint64_t chipid = ESP.getEfuseMac(); // The chip ID is essentially its MAC address(length: 6 bytes).
@@ -784,7 +779,7 @@ void setup(void)
   String devname = devs.dev_name;
   devname.toUpperCase();
   tft_clear(BLACK);
-  change_control_target();
+  change_control_target(target_index);
   tft_clear(BLACK);
 }
 
@@ -793,7 +788,12 @@ void loop()
   static bool airtub_seeking = true;
   static bool fire_fliped = false;
   static unsigned long wifi_rssi_last_ts = 0;
+  static unsigned long flame_blink_ts = 0;
   static uint8_t currentOperateHint = 0;
+  static bool initialized = false;
+
+  uint8_t fire_working_mode = 0;
+  uint8_t current_mode = 0;
 
   // #ifdef DEBUG_ENABLED
   //   const unsigned long start_time = millis();
@@ -827,6 +827,10 @@ void loop()
   {
     modified = false;
     target_temp = 0;
+  }
+  else if (!modified)
+  {
+    target_temp = json[ap_target_temp].as<int>();
   }
 
   if (show_qrcode)
@@ -868,25 +872,6 @@ void loop()
     // wifi_rssi_last_ts = millis(); // 更新放到操作提示后，重复利用
   }
 
-  if (addr == IPAddress(0, 0, 0, 0))
-  {
-    tft_clear_rect(0, 21, 240, 92, BLACK);
-    tft_draw_bitmap(70, 5, seeking, 16, 16);
-#ifdef USE_CHINESE
-    tft_draw_bitmap(30, 55, ap_seeking, 140, 24);
-#else
-    tft_write(30, 55, 3, "Seeking...", YELLOW);
-#endif
-    tft_update();
-    return;
-  }
-  else if (airtub_seeking)
-  {
-    airtub_seeking = false;
-    tft_clear_rect(0, 21, 240, 92, BLACK);
-    tft_update();
-  }
-
   if (json.containsKey(atm_target_mode))
   {
     const uint8_t target_auto_mode = json[atm_target_mode].as<int>();
@@ -901,7 +886,7 @@ void loop()
     }
   }
 
-  if (target_index == 1)
+  if (target_index == 0)
   {
     tft_draw_bitmap(70, 5, shower, 16, 16);
   }
@@ -993,25 +978,21 @@ void loop()
 
   target_temp += rotary;
   target_temp = constrain(target_temp, MIN_TEMP, MAX_TEMP); // Limit target temperature
-  if (target_temp != 0)
+  if (target_temp != value_target_temp && modified)
   {
-    if (target_temp != value_target_temp && modified)
-    {
-      sprintf(buffer, "%02d", target_temp);
-      const char *value = buffer;
-      // DebugPrintf("Local Settings: %s\n", value);
-      tft_write(160, 70, 6, value, RED);
-    }
-    else
-    {
-      sprintf(buffer, "%02d", value_target_temp);
-      const char *value = buffer;
-      // DebugPrintf("tct: %s\n", value);
-      tft_write(160, 70, 6, value, BLUE);
-    }
+    sprintf(buffer, "%02d", target_temp);
+    const char *value = buffer;
+    // DebugPrintf("Local Settings: %s\n", value);
+    tft_write(160, 70, 6, value, RED);
+  }
+  else
+  {
+    sprintf(buffer, "%02d", value_target_temp);
+    const char *value = buffer;
+    // DebugPrintf("tct: %s\n", value);
+    tft_write(160, 70, 6, value, BLUE);
   }
 
-  int current_mode = 0;
   if (json.containsKey(ap_current_mode))
   {
     current_mode = json[ap_current_mode].as<int>();
@@ -1022,11 +1003,36 @@ void loop()
     fire_modulate = json[ap_modulate].as<int>();
   }
 
+  if ((millis() / 1000) % 2 == 0)
+  {
+    fire_working_mode = 0;
+  }
+  else if (json.containsKey(dhw_current_mode) && json[dhw_current_mode].as<int>() == 1)
+  {
+    fire_working_mode = 1;
+  }
+  else if (json.containsKey(ch_current_mode) && json[ch_current_mode].as<int>() == 1)
+  {
+    fire_working_mode = 2;
+  }
+
   // draw the flame
   if (json.containsKey(ap_flame_state))
   {
     static unsigned long last_flip = millis();
     int value_fst = json[ap_flame_state].as<int>();
+    if (fire_working_mode == 1)
+    {
+      tft_draw_bitmap(95, 5, shower_burn, 16, 16);
+    }
+    else if (fire_working_mode == 2)
+    {
+      tft_draw_bitmap(95, 5, radiator_burn, 16, 16);
+    }
+    else
+    {
+      tft_clear_rect(95, 5, 16, 16, BLACK);
+    }
     if (value_fst == 1 && current_mode == 1)
     {
       if (millis() - last_flip > 500)
@@ -1094,9 +1100,6 @@ void loop()
 #endif
   }
 
-  // update all
-  tft_update();
-
   if (millis() - last_mcast_ts > MCAST_TIMEOUT)
   {
     DebugPrintf("No multicast message received more than %d secs,", MCAST_TIMEOUT / 1000);
@@ -1106,6 +1109,33 @@ void loop()
     airtub_seeking = true;
     last_mcast_ts = millis();
   }
+
+  if (addr == IPAddress(0, 0, 0, 0))
+  {
+    tft_draw_bitmap(70, 5, seeking, 16, 16);
+    if (!initialized)
+    {
+      tft_clear_rect(0, 21, 240, 92, BLACK);
+#ifdef USE_CHINESE
+      tft_draw_bitmap(30, 55, ap_seeking, 140, 24);
+#else
+      tft_write(30, 55, 3, "Seeking...", YELLOW);
+#endif
+    }
+  }
+  else if (airtub_seeking)
+  {
+    airtub_seeking = false;
+    if (!initialized)
+    {
+      tft_clear_rect(0, 21, 240, 92, BLACK);
+      tft_update();
+      initialized = true;
+    }
+  }
+
+  // update all
+  tft_update();
 
   // #ifdef DEBUG_ENABLED
   //   const unsigned long used_time = millis() - start_time;
@@ -1118,4 +1148,5 @@ void loop()
     deep_sleep_now();
   }
 #endif
+  // DebugPrintf("Free Heap: %d\n", ESP.getFreeHeap());
 }
