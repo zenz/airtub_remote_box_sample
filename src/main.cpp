@@ -9,6 +9,7 @@
 #include "tft_handler.h"
 #include "ec11_handler.h"
 #include "udp_handler.h"
+#include "time.h"
 
 #include "../assets/fire_small.h"
 #include "../assets/fire_small_rev.h"
@@ -99,6 +100,10 @@ bool shouldSaveConfig = false;
 bool configured = false;
 
 #define UDP_PORT 4211
+
+const char *ntpServer = "pool.ntp.org";
+const long gmtOffset_sec = 28800; // 8 hours
+const int daylightOffset_sec = 0;
 
 WiFiManager wm;
 const char *my_password = "4008206306";
@@ -279,6 +284,7 @@ void send_udp_msg(udp_msg_format_t msg)
   unsigned long start_ts = millis();
   do
   {
+    yield(); // always give time to handle other tasks
     if (millis() - last_sent_ts > 1000)
     {
       udp.writeTo((const uint8_t *)&msg, sizeof(msg), addr, UDP_PORT);
@@ -602,6 +608,20 @@ void deep_sleep_now()
 #endif
 }
 
+void displayLocalTime()
+{
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo))
+  {
+    DebugPrintln("Failed to obtain time");
+    return;
+  }
+  char time_str[30];
+  strftime(time_str, 30, "%H:%M", &timeinfo);
+  // DebugPrintf("Local Time: %s\n", time_str);
+  tft_write(80, 6, 2, time_str, WHITE);
+}
+
 void setup(void)
 {
   DebugBegin(115200);
@@ -760,6 +780,9 @@ void setup(void)
     DebugPrintln("");
   }
 
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  // displayLocalTime();
+
   if (mdns_init() != ESP_OK)
   {
     DebugPrintln("mDNS failed to start");
@@ -774,6 +797,14 @@ void setup(void)
   else
   {
     DebugPrintln("UDP Listen failed");
+  }
+
+  // check wake up reason and set target_index
+  esp_sleep_wakeup_cause_t wakeup_reason;
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+  if (wakeup_reason != ESP_SLEEP_WAKEUP_EXT0)
+  {
+    target_index = 0;
   }
 
   String devname = devs.dev_name;
@@ -794,6 +825,7 @@ void loop()
 
   uint8_t fire_working_mode = 0;
   uint8_t current_mode = 0;
+  int outdoor_length = 0;
 
   // #ifdef DEBUG_ENABLED
   //   const unsigned long start_time = millis();
@@ -859,18 +891,20 @@ void loop()
     const int wifi_rssi = wifi_get_rssi();
     if (wifi_rssi > 70)
     {
-      tft_draw_bitmap(45, 5, wifi_good, 16, 16);
+      tft_draw_bitmap(40, 5, wifi_good, 16, 16);
     }
     else if (wifi_rssi > 30)
     {
-      tft_draw_bitmap(45, 5, wifi_normal, 16, 16);
+      tft_draw_bitmap(40, 5, wifi_normal, 16, 16);
     }
     else
     {
-      tft_draw_bitmap(45, 5, wifi_bad, 16, 16);
+      tft_draw_bitmap(40, 5, wifi_bad, 16, 16);
     }
     // wifi_rssi_last_ts = millis(); // 更新放到操作提示后，重复利用
   }
+
+  displayLocalTime();
 
   if (json.containsKey(atm_target_mode))
   {
@@ -888,7 +922,7 @@ void loop()
 
   if (target_index == 0)
   {
-    tft_draw_bitmap(70, 5, shower, 16, 16);
+    tft_draw_bitmap(60, 5, shower, 16, 16);
   }
   else
   {
@@ -896,16 +930,16 @@ void loop()
     {
       if (json.containsKey(ext_temp_pwr))
       {
-        tft_draw_bitmap(70, 5, room_ext, 16, 16);
+        tft_draw_bitmap(60, 5, room_ext, 16, 16);
       }
       else
       {
-        tft_draw_bitmap(70, 5, room, 16, 16);
+        tft_draw_bitmap(60, 5, room, 16, 16);
       }
     }
     else
     {
-      tft_draw_bitmap(70, 5, radiator, 16, 16);
+      tft_draw_bitmap(60, 5, radiator, 16, 16);
     }
   }
 
@@ -915,9 +949,13 @@ void loop()
     int value_odt = json[out_door_temp].as<int>();
     sprintf(buffer, "%02d", value_odt);
     const char *value = buffer;
-    const int length = strlen(value);
-    tft_draw_bitmap(length > 2 ? 170 : 182, 5, outdoor, 16, 16);
-    tft_write(length > 2 ? 190 : 202, 5, 2, value, WHITE);
+    outdoor_length = strlen(value);
+    tft_draw_bitmap(outdoor_length > 2 ? 170 : 182, 5, outdoor, 16, 16);
+    tft_write(outdoor_length > 2 ? 190 : 202, 5, 2, value, WHITE);
+  }
+  else
+  {
+    tft_clear_rect(150, 5, 90, 16, BLACK); // also need to clear the rect for flash icon
   }
 
   // handling error code
@@ -1021,17 +1059,19 @@ void loop()
   {
     static unsigned long last_flip = millis();
     int value_fst = json[ap_flame_state].as<int>();
+    const int flash_icon_pos = (outdoor_length == 0) ? 209 : (outdoor_length > 2) ? 150
+                                                                                  : 162;
     if (fire_working_mode == 1)
     {
-      tft_draw_bitmap(95, 5, shower_burn, 16, 16);
+      tft_draw_bitmap(flash_icon_pos, 5, shower_burn, 16, 16);
     }
     else if (fire_working_mode == 2)
     {
-      tft_draw_bitmap(95, 5, radiator_burn, 16, 16);
+      tft_draw_bitmap(flash_icon_pos, 5, radiator_burn, 16, 16);
     }
     else
     {
-      tft_clear_rect(95, 5, 16, 16, BLACK);
+      tft_clear_rect(flash_icon_pos, 5, 16, 16, BLACK);
     }
     if (value_fst == 1 && current_mode == 1)
     {
@@ -1112,7 +1152,7 @@ void loop()
 
   if (addr == IPAddress(0, 0, 0, 0))
   {
-    tft_draw_bitmap(70, 5, seeking, 16, 16);
+    tft_draw_bitmap(60, 5, seeking, 16, 16);
     if (!initialized)
     {
       tft_clear_rect(0, 21, 240, 92, BLACK);
