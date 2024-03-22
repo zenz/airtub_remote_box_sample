@@ -115,6 +115,8 @@ volatile bool msg_sent = true;
 unsigned long last_mcast_ts = millis();
 
 #define UDP_SEND_DELAY 1000
+#define UDP_SEND_RETRY 10
+uint8_t retry = 0;
 
 JsonDocument json;
 int target_temp = 0;
@@ -270,6 +272,7 @@ inline void xor_crypt(uint8_t *buffer, int buf_len, const uint8_t *key, int key_
 void IRAM_ATTR prepare_msg(udp_msg_format_t msg)
 {
   msg_sent = false;
+  retry = 0;
 
   /* Do some Airtub Partner communicate treatments first.*/
   DebugPrintf("Message Processing: %s\n", msg.data);
@@ -286,11 +289,17 @@ void IRAM_ATTR process_msg()
   }
 
   static unsigned long last_sent_ts = millis();
-  if (millis() - last_sent_ts > UDP_SEND_DELAY)
+  if (millis() - last_sent_ts > UDP_SEND_DELAY && retry < UDP_SEND_RETRY)
   {
     DebugPrintln("Sending UDP message");
     udp.writeTo((const uint8_t *)&msg_cmd, sizeof(msg_cmd), addr, UDP_PORT);
     last_sent_ts = millis();
+    retry++;
+  }
+  else
+  {
+    msg_sent = true; // timeout or retry limit reached
+    retry = 0;
   }
 }
 
