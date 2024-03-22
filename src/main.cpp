@@ -110,9 +110,11 @@ const char *my_password = "4008206306";
 AsyncUDP udp;
 IPAddress addr = IPAddress(0, 0, 0, 0);
 IPAddress UDP_BCAST_GRP = IPAddress(224, 0, 1, 3);
-udp_msg_format_t msg;
-bool msg_sent = false;
+udp_msg_format_t msg_recv, msg_cmd;
+volatile bool msg_sent = true;
 unsigned long last_mcast_ts = millis();
+
+#define UDP_SEND_DELAY 1000
 
 JsonDocument json;
 int target_temp = 0;
@@ -182,6 +184,7 @@ int MAX_TEMP = 0;
 uint8_t last_dhw_target_mode = 0;
 uint8_t last_ch_target_mode = 0;
 
+char target_airtub[30];
 char target_reply[55];
 char my_name[32];
 
@@ -264,40 +267,31 @@ inline void xor_crypt(uint8_t *buffer, int buf_len, const uint8_t *key, int key_
   }
 }
 
-void send_udp_msg(udp_msg_format_t msg)
+void IRAM_ATTR prepare_msg(udp_msg_format_t msg)
 {
-  static unsigned long last_sent_ts = millis();
   msg_sent = false;
 
   /* Do some Airtub Partner communicate treatments first.*/
   DebugPrintf("Message Processing: %s\n", msg.data);
   xor_crypt((uint8_t *)msg.data, msg.len, (uint8_t *)devs.dev_password, strlen(devs.dev_password)); // 加密
   msg.crc = crc32Buffer(msg.data, msg.len);
+  msg_cmd = msg;
+}
 
-  if (addr == IPAddress(0, 0, 0, 0))
+void IRAM_ATTR process_msg()
+{
+  if (msg_sent || addr == IPAddress(0, 0, 0, 0))
   {
-    DebugPrintln("No device found! Do not send anything.");
     return;
   }
 
-  DebugPrintln("Sending UDP message");
-  unsigned long start_ts = millis();
-  do
+  static unsigned long last_sent_ts = millis();
+  if (millis() - last_sent_ts > UDP_SEND_DELAY)
   {
-    yield(); // always give time to handle other tasks
-    if (millis() - last_sent_ts > 1000)
-    {
-      udp.writeTo((const uint8_t *)&msg, sizeof(msg), addr, UDP_PORT);
-      last_sent_ts = millis();
-    }
-    // 超时退出循环
-    if (millis() - start_ts > SEND_TIMEOUT)
-    {
-      DebugPrintln("Send message timeout!");
-      addr = IPAddress(0, 0, 0, 0);
-      break;
-    }
-  } while (!msg_sent);
+    DebugPrintln("Sending UDP message");
+    udp.writeTo((const uint8_t *)&msg_cmd, sizeof(msg_cmd), addr, UDP_PORT);
+    last_sent_ts = millis();
+  }
 }
 
 // change target temp
@@ -314,7 +308,7 @@ void change_value()
   msg_send.len = serializeJson(json, buffer, 180);
   strcpy(msg_send.data, buffer);
 
-  send_udp_msg(msg_send);
+  prepare_msg(msg_send);
 }
 
 // change target mode
@@ -339,7 +333,7 @@ void change_mode(uint8_t mode)
     msg_send.len = serializeJson(json, buffer, 180);
     strcpy(msg_send.data, buffer);
 
-    send_udp_msg(msg_send);
+    prepare_msg(msg_send);
   }
 }
 
@@ -365,7 +359,7 @@ void switch_heating_mode(uint8_t mode)
   msg_send.len = serializeJson(json, buffer, 180);
   strcpy(msg_send.data, buffer);
 
-  send_udp_msg(msg_send);
+  prepare_msg(msg_send);
 }
 
 // reset error
@@ -381,7 +375,7 @@ void reset_error()
   msg_send.len = serializeJson(json, buffer, 180);
   strcpy(msg_send.data, buffer);
 
-  send_udp_msg(msg_send);
+  prepare_msg(msg_send);
 }
 
 // remove specified substring
@@ -532,40 +526,38 @@ void update_msg_data(const char *json_msg)
   }
 }
 
-void udp_callback(AsyncUDPPacket &packet)
+void IRAM_ATTR udp_callback(AsyncUDPPacket &packet)
 {
-  if (packet.length() > sizeof(msg))
+  if (packet.length() > sizeof(msg_recv))
   { // Incorrect packet length
     DebugPrintln("Invalid packet length");
     return;
   }
-  memcpy(&msg, packet.data(), packet.length());
-  if (msg.crc == 0 || msg.type <= 0 || msg.type > 5 || crc32Buffer(msg.data, msg.len) != msg.crc)
+  memcpy(&msg_recv, packet.data(), packet.length());
+  if (msg_recv.crc == 0 || msg_recv.type <= 0 || msg_recv.type > 5 || crc32Buffer(msg_recv.data, msg_recv.len) != msg_recv.crc)
   { // Incorrect device type or CRC error.
     DebugPrintln("Invalid packet");
     return;
   }
-  xor_crypt(reinterpret_cast<uint8_t *>(msg.data), msg.len, reinterpret_cast<const uint8_t *>(devs.dev_password), strlen(devs.dev_password)); // decode message
-  msg.data[msg.len] = '\0';
-  char targetString[30];
-  sprintf(targetString, "\"dev\":\"%s\",", devs.dev_name);
+  xor_crypt(reinterpret_cast<uint8_t *>(msg_recv.data), msg_recv.len, reinterpret_cast<const uint8_t *>(devs.dev_password), strlen(devs.dev_password)); // decode message
+  msg_recv.data[msg_recv.len] = '\0';
   unsigned long time_stamp = millis();
-  if (removeSubstring(msg.data, targetString))
+  if (removeSubstring(msg_recv.data, target_airtub))
   {
-    padWithSpaces(msg.data, 180);
-    update_msg_data(msg.data);
+    padWithSpaces(msg_recv.data, 180);
+    update_msg_data(msg_recv.data);
     DebugPrintf("MCAST JSON: %s - %lu\n", json.as<String>().c_str(), time_stamp);
     last_mcast_ts = millis();
     if (addr == IPAddress(0, 0, 0, 0))
     {
-      // 从广播信息中也可以获取Airtub Partner的IP
+      // get partner ip from mcast msg
       addr = packet.remoteIP();
       DebugPrintf("Find airtub partner from udp_callback: %s\n", addr.toString().c_str());
     }
   }
-  else if (strstr(msg.data, target_reply) != nullptr)
+  else if (strstr(msg_recv.data, target_reply) != nullptr)
   {
-    DebugPrintf("P2P JSON: %s - %lu\n", msg.data, time_stamp);
+    DebugPrintf("P2P JSON: %s - %lu\n", msg_recv.data, time_stamp);
     msg_sent = true;
   }
   // else
@@ -619,7 +611,7 @@ void displayLocalTime()
   char time_str[30];
   strftime(time_str, 30, "%H:%M", &timeinfo);
   // DebugPrintf("Local Time: %s\n", time_str);
-  tft_write(80, 6, 2, time_str, WHITE);
+  tft_write(80, 6, 2, time_str, BLUE);
 }
 
 void setup(void)
@@ -788,6 +780,7 @@ void setup(void)
     DebugPrintln("mDNS failed to start");
   }
 
+  sprintf(target_airtub, "\"dev\":\"%s\",", devs.dev_name);
   sprintf(target_reply, "{\"rec\":1,\"dev\":\"%s\"}", devs.dev_name);
   if (udp.listenMulticast(UDP_BCAST_GRP, UDP_PORT))
   {
@@ -797,14 +790,6 @@ void setup(void)
   else
   {
     DebugPrintln("UDP Listen failed");
-  }
-
-  // check wake up reason and set target_index
-  esp_sleep_wakeup_cause_t wakeup_reason;
-  wakeup_reason = esp_sleep_get_wakeup_cause();
-  if (wakeup_reason != ESP_SLEEP_WAKEUP_EXT0)
-  {
-    target_index = 0;
   }
 
   String devname = devs.dev_name;
@@ -906,7 +891,7 @@ void loop()
 
   displayLocalTime();
 
-  if (json.containsKey(atm_target_mode))
+  if (json.containsKey(atm_target_mode) && target_index == 1)
   {
     const uint8_t target_auto_mode = json[atm_target_mode].as<int>();
     if (target_auto_mode != CH_MODE)
@@ -1054,6 +1039,7 @@ void loop()
     fire_working_mode = 2;
   }
 
+  const uint16_t tray_color = msg_sent ? DARK_GRAY : LIGHT_GRAY;
   // draw the flame
   if (json.containsKey(ap_flame_state))
   {
@@ -1092,13 +1078,13 @@ void loop()
                                                                                         : fire_small,
                           48, 40);
         }
-        tft_draw_round_rect(160, 60, 38, 5, 5, LIGHT_GRAY);
+        tft_draw_round_rect(160, 60, 38, 5, 5, tray_color);
       }
     }
     else
     {
       tft_clear_rect(155, 21, 48, 40, BLACK);
-      tft_draw_round_rect(160, 60, 38, 5, 5, LIGHT_GRAY);
+      tft_draw_round_rect(160, 60, 38, 5, 5, tray_color);
     }
   }
 
@@ -1176,6 +1162,8 @@ void loop()
 
   // update all
   tft_update();
+
+  process_msg();
 
   // #ifdef DEBUG_ENABLED
   //   const unsigned long used_time = millis() - start_time;
