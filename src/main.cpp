@@ -296,7 +296,7 @@ void IRAM_ATTR process_msg()
     last_sent_ts = millis();
     retry++;
   }
-  else
+  else if (retry >= UDP_SEND_RETRY)
   {
     msg_sent = true; // timeout or retry limit reached
     retry = 0;
